@@ -6,6 +6,7 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+from devpilot.ai.base import DiagnosisResult
 from devpilot.ai.client import ask, diagnose
 from devpilot.ai.context import _get_path_entries, _read_os_release, gather_context
 
@@ -165,7 +166,7 @@ class TestClient:
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
             patch("devpilot.ai.providers.openai.OpenAI") as mock_openai,
-            patch("devpilot.ai.providers.openai.Live") as mock_live,
+            patch("rich.live.Live") as mock_live,
         ):
             mock_client = MagicMock()
             mock_client.chat.completions.create.return_value = [fake_chunk1, fake_chunk2]

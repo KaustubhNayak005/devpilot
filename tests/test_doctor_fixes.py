@@ -88,8 +88,8 @@ class TestDoctorWithFix:
         ]
         return module
 
-    @patch("devpilot.doctor.runner.logging.getLogger")
-    @patch("devpilot.doctor.runner.run_command")
+    @patch("logging.getLogger")
+    @patch("devpilot.doctor.fixes.run_command")
     def test_fix_runs_on_failing_module(self, mock_run, mock_get_logger):
         """When fix=True, the fix function is called for failing modules."""
         mock_run.return_value = MagicMock(returncode=0, stderr="")

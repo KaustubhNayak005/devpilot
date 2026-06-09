@@ -7,29 +7,65 @@ import os
 from devpilot.ai.base import AIProvider
 
 
+def _try_import_openai():
+    from devpilot.ai.providers.openai import OpenAIProvider
+
+    return OpenAIProvider
+
+
+def _try_import_anthropic():
+    from devpilot.ai.providers.anthropic import AnthropicProvider
+
+    return AnthropicProvider
+
+
+def _try_import_gemini():
+    from devpilot.ai.providers.gemini import GeminiProvider
+
+    return GeminiProvider
+
+
+def _try_import_ollama():
+    from devpilot.ai.providers.ollama import OllamaProvider
+
+    return OllamaProvider
+
+
 def get_provider() -> AIProvider:
     """Return the configured AI provider based on DEVPILOT_AI_PROVIDER env var.
 
     Falls back to the first available provider if the env var is not set.
     Raises SystemExit with a helpful message if no provider is available.
     """
-    from devpilot.ai.providers.anthropic import AnthropicProvider
-    from devpilot.ai.providers.gemini import GeminiProvider
-    from devpilot.ai.providers.ollama import OllamaProvider
-    from devpilot.ai.providers.openai import OpenAIProvider
+    providers: dict[str, AIProvider] = {}
+
+    for name, importer in [
+        ("openai", _try_import_openai),
+        ("anthropic", _try_import_anthropic),
+        ("gemini", _try_import_gemini),
+        ("ollama", _try_import_ollama),
+    ]:
+        try:
+            providers[name] = importer()()
+        except ImportError:
+            continue
+
+    if not providers:
+        print(
+            "[red]No AI provider could be loaded.[/red]\n"
+            "Install at least one: pip install openai anthropic google-generativeai\n"
+            "Or install ollama locally for the ollama provider."
+        )
+        raise SystemExit(1)
 
     requested = os.environ.get("DEVPILOT_AI_PROVIDER", "").lower()
 
-    providers: dict[str, AIProvider] = {
-        "openai": OpenAIProvider(),
-        "anthropic": AnthropicProvider(),
-        "gemini": GeminiProvider(),
-        "ollama": OllamaProvider(),
-    }
-
     if requested:
         if requested not in providers:
-            print(f"[red]Unknown provider: {requested}. " f"Choose from: {', '.join(providers)}")
+            print(
+                f"[red]Unknown or unavailable provider: {requested}. "
+                f"Available: {', '.join(providers)}"
+            )
             raise SystemExit(1)
         provider = providers[requested]
         if not provider.is_available():

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -25,16 +25,26 @@ class TestProviderSelection:
         {"DEVPILOT_AI_PROVIDER": "anthropic", "ANTHROPIC_API_KEY": "sk-test"},
         clear=True,
     )
-    def test_returns_anthropic_when_requested_and_available(self):
+    @patch("devpilot.ai.factory._try_import_anthropic")
+    def test_returns_anthropic_when_requested_and_available(self, mock_import):
         """Returns AnthropicProvider when DEVPILOT_AI_PROVIDER=anthropic and key is set."""
+        mock_cls = MagicMock()
+        mock_cls.return_value.is_available.return_value = True
+        mock_cls.return_value.__class__.__name__ = "AnthropicProvider"
+        mock_import.return_value = mock_cls
         provider = get_provider()
         assert provider.__class__.__name__ == "AnthropicProvider"
 
     @patch.dict(
         "os.environ", {"DEVPILOT_AI_PROVIDER": "gemini", "GEMINI_API_KEY": "sk-test"}, clear=True
     )
-    def test_returns_gemini_when_requested_and_available(self):
+    @patch("devpilot.ai.factory._try_import_gemini")
+    def test_returns_gemini_when_requested_and_available(self, mock_import):
         """Returns GeminiProvider when DEVPILOT_AI_PROVIDER=gemini and key is set."""
+        mock_cls = MagicMock()
+        mock_cls.return_value.is_available.return_value = True
+        mock_cls.return_value.__class__.__name__ = "GeminiProvider"
+        mock_import.return_value = mock_cls
         provider = get_provider()
         assert provider.__class__.__name__ == "GeminiProvider"
 
