@@ -184,8 +184,10 @@ ruff check src/ tests/ && black --check src/ tests/ && mypy src/ && pytest -v
 
 ## Documentation
 
-- [ARCHITECTURE.md](./ARCHITECTURE.md) — system design, component diagram, design decisions
-- [DEEP_DIVE.md](./DEEP_DIVE.md) — exhaustive walkthrough of every component, module lifecycle, how to add new modules
+- [Architecture](./docs/ARCHITECTURE.md) — system design, component diagram, design decisions
+- [Changelog](./docs/CHANGELOG.md) — release notes and version history
+- [Deep Dive](./docs/DEEP_DIVE.md) — exhaustive walkthrough of every component
+- [Implementation Plan](./docs/IMPLEMENTATION_PLAN.md) — original implementation blueprint
 
 ## License
 
