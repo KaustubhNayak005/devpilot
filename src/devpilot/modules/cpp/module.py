@@ -15,6 +15,7 @@ class CppModule(BaseModule):
     """Installs the C/C++ build toolchain (GCC, Clang, CMake, GDB, Make)."""
 
     name: str = "cpp"
+    dependencies: list[str] = []
 
     def install(self) -> bool:
         """Install build-essential, clang, cmake, gdb, make and smoke-test with hello world.

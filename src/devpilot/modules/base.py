@@ -32,6 +32,7 @@ class BaseModule(ABC):
     """
 
     name: str
+    dependencies: list[str] = []
 
     @abstractmethod
     def install(self) -> bool:

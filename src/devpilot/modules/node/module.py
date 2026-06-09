@@ -14,6 +14,7 @@ class NodeModule(BaseModule):
     """Installs Node.js LTS via NodeSource and TypeScript globally."""
 
     name: str = "node"
+    dependencies: list[str] = []
 
     def install(self) -> bool:
         """Install Node.js LTS and TypeScript.

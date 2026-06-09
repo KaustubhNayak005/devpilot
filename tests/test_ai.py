@@ -6,7 +6,7 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
-from devpilot.ai.client import DiagnosisResult, _get_api_key, ask, diagnose
+from devpilot.ai.client import ask, diagnose
 from devpilot.ai.context import _get_path_entries, _read_os_release, gather_context
 
 
@@ -75,28 +75,6 @@ class TestContext:
 class TestClient:
     """Tests for AI client functions."""
 
-    def test_get_api_key_from_env(self):
-        """_get_api_key reads from OPENAI_API_KEY env var."""
-        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-env-key"}):
-            key = _get_api_key()
-        assert key == "sk-test-env-key"
-
-    def test_get_api_key_from_config(self):
-        """_get_api_key falls back to config when env var is missing."""
-        with patch.dict(os.environ, clear=True):
-            with patch("devpilot.ai.client.ConfigManager") as mock_cm:
-                mock_cm.return_value.get_preference.return_value = "sk-test-config-key"
-                key = _get_api_key()
-        assert key == "sk-test-config-key"
-
-    def test_get_api_key_missing(self):
-        """_get_api_key returns None when no key is configured."""
-        with patch.dict(os.environ, clear=True):
-            with patch("devpilot.ai.client.ConfigManager") as mock_cm:
-                mock_cm.return_value.get_preference.return_value = ""
-                key = _get_api_key()
-        assert key is None
-
     def test_diagnose_parses_valid_response(self):
         """diagnose returns a list of DiagnosisResult from a valid JSON response."""
         fake_response_data = {
@@ -116,16 +94,14 @@ class TestClient:
 
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
-            patch("devpilot.ai.client.OpenAI") as mock_openai,
+            patch("devpilot.ai.providers.openai.OpenAI") as mock_openai,
         ):
             mock_client = MagicMock()
             mock_client.chat.completions.create.return_value = fake_response
             mock_openai.return_value = mock_client
 
             results = diagnose(
-                [
-                    {"module": "git", "check_name": "git installed", "message": "not found"},
-                ],
+                [{"module": "git", "check_name": "git installed", "message": "not found"}],
                 {
                     "os_release": {},
                     "path_entries": [],
@@ -148,7 +124,7 @@ class TestClient:
 
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
-            patch("devpilot.ai.client.OpenAI") as mock_openai,
+            patch("devpilot.ai.providers.openai.OpenAI") as mock_openai,
         ):
             mock_client = MagicMock()
             mock_client.chat.completions.create.return_value = fake_response
@@ -167,7 +143,7 @@ class TestClient:
 
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
-            patch("devpilot.ai.client.OpenAI") as mock_openai,
+            patch("devpilot.ai.providers.openai.OpenAI") as mock_openai,
         ):
             mock_client = MagicMock()
             mock_client.chat.completions.create.return_value = fake_response
@@ -188,8 +164,8 @@ class TestClient:
 
         with (
             patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test"}),
-            patch("devpilot.ai.client.OpenAI") as mock_openai,
-            patch("devpilot.ai.client.Live") as mock_live,
+            patch("devpilot.ai.providers.openai.OpenAI") as mock_openai,
+            patch("devpilot.ai.providers.openai.Live") as mock_live,
         ):
             mock_client = MagicMock()
             mock_client.chat.completions.create.return_value = [fake_chunk1, fake_chunk2]
@@ -202,3 +178,5 @@ class TestClient:
 
         assert "Hello" in result
         assert "world!" in result
+
+

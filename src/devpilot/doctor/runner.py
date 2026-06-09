@@ -17,13 +17,15 @@ console = Console()
 def run_all_doctors(
     modules: list[BaseModule],
     ai_diagnose: bool = False,
+    fix: bool = False,
 ) -> tuple[list[CheckResult], int]:
     """Run doctor() on every module and compute the overall health score.
 
     Args:
         modules: A list of BaseModule instances to run doctor() against.
-        ai_diagnose: If True, send failures to OpenAI for AI-powered diagnosis
-                     and offer to run suggested fixes.
+        ai_diagnose: If True, send failures to AI for diagnosis and offer fixes.
+        fix: If True, run known fixes automatically for failing modules before
+             falling through to AI diagnosis (if also enabled).
 
     Returns:
         A tuple of (all_results, health_score). health_score is an integer
@@ -40,10 +42,67 @@ def run_all_doctors(
     passed = sum(1 for r in all_results if r.passed)
     health_score = round((passed / total) * 100) if total > 0 else 100
 
+    if fix:
+        _run_fixes(modules, module_results)
+
     if ai_diagnose:
         _run_ai_diagnosis(modules, module_results)
 
     return all_results, health_score
+
+
+def _run_fixes(
+    modules: list[BaseModule],
+    module_results: dict[str, list[CheckResult]],
+) -> None:
+    """Run known fixes for failing modules — offline, no LLM needed.
+
+    Args:
+        modules: List of BaseModule instances.
+        module_results: Mapping of module name to its list of CheckResults.
+    """
+    from devpilot.doctor.fixes import FIXES
+
+    console.print()
+    console.print(Panel.fit("[bold yellow]Auto-Fix Mode[/bold yellow]", border_style="yellow"))
+    console.print()
+
+    module_map: dict[str, BaseModule] = {m.name: m for m in modules}
+
+    for module_name, results in module_results.items():
+        all_pass = all(r.passed for r in results)
+        if all_pass:
+            continue
+
+        fix_func = FIXES.get(module_name)
+        if fix_func is None:
+            console.print(f"[yellow]{module_name}:[/yellow] No fix available — skip.")
+            continue
+
+        console.print(f"[bold]{module_name}:[/bold] FAIL → running fix...")
+        try:
+            import logging
+
+            logger = logging.getLogger("devpilot.doctor")
+            success = fix_func(logger)
+        except Exception as exc:
+            console.print(f"  [red]Fix raised exception: {exc}[/red]")
+            success = False
+
+        module = module_map.get(module_name)
+        if module:
+            verify_results = module.verify()
+            all_fixed = all(r.passed for r in verify_results)
+            if all_fixed and success is not False:
+                console.print("  [green]Fixed successfully[/green]")
+            elif not success:
+                console.print("  [red]Fix failed — manual action required[/red]")
+            else:
+                console.print("  [yellow]Fix ran but checks still failing[/yellow]")
+        else:
+            console.print("  [yellow]Could not re-verify[/yellow]")
+
+    console.print()
 
 
 def _run_ai_diagnosis(
@@ -120,7 +179,6 @@ def _run_ai_diagnosis(
                 except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as exc:
                     console.print(f"[red]Fix execution error: {exc}[/red]")
 
-                # Re-run verify on the affected module
                 module = module_map.get(d.module_name)
                 if module:
                     console.print(f"\n[bold]Re-checking {d.module_name}...[/bold]")

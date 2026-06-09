@@ -244,6 +244,7 @@ class NvimModule(BaseModule):
     """Installs Neovim, ripgrep, fd-find, and deploys a full lazy.nvim configuration."""
 
     name: str = "nvim"
+    dependencies: list[str] = []
 
     def install(self) -> bool:
         """Install Neovim + companions, deploy config, and sync plugins.

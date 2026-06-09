@@ -15,6 +15,7 @@ class PythonModule(BaseModule):
     """Installs python3, pip, and venv; verifies with a temp venv smoke-test."""
 
     name: str = "python"
+    dependencies: list[str] = []
 
     def install(self) -> bool:
         """Install python3, pip, venv via apt and run a smoke-test venv.

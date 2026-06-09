@@ -12,6 +12,7 @@ class GitModule(BaseModule):
     """Installs git and ensures global user identity is configured."""
 
     name: str = "git"
+    dependencies: list[str] = []
 
     def install(self) -> bool:
         """Install git via apt and prompt for global config if missing.

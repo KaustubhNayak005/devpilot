@@ -38,10 +38,7 @@ class TestCapture:
     def test_capture_returns_snapshot(self):
         """capture_snapshot returns a Snapshot instance with a name."""
         with (
-            patch(
-                "devpilot.snapshot.capture._capture_system",
-                return_value={"hostname": "test"},
-            ),
+            patch("devpilot.snapshot.capture._capture_system", return_value={"hostname": "test"}),
             patch("devpilot.snapshot.capture._capture_apt_packages", return_value=["git"]),
             patch("devpilot.snapshot.capture._capture_git_config", return_value={}),
             patch("devpilot.snapshot.capture._capture_env_vars", return_value={}),

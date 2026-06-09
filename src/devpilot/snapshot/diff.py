@@ -43,10 +43,9 @@ def diff_snapshots(saved: Snapshot, current: Snapshot) -> SnapshotDiff:
     diff.removed_packages = sorted(saved_pkgs - current_pkgs)
 
     # Environment variable differences
-    all_keys = set(
+    for key in set(
         list(saved.environment_variables.keys()) + list(current.environment_variables.keys())
-    )
-    for key in all_keys:
+    ):
         old_val = saved.environment_variables.get(key)
         new_val = current.environment_variables.get(key)
         if old_val != new_val:

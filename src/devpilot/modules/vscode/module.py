@@ -12,6 +12,7 @@ class VSCodeModule(BaseModule):
     """Detects VS Code (via 'code' CLI) and verifies the WSL extension is installed."""
 
     name: str = "vscode"
+    dependencies: list[str] = []
 
     def install(self) -> bool:
         """Detect VS Code and advise on WSL extension.

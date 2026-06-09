@@ -23,7 +23,26 @@ from devpilot.modules.python.module import PythonModule
 from devpilot.modules.vscode.module import VSCodeModule
 from devpilot.utils.shell import run_command
 
+VERSION = "0.2.0"
+
+
+def _version_callback(value: bool) -> None:
+    if value:
+        console.print(f"DevPilot version {VERSION}")
+        raise typer.Exit()
+
+
 app = typer.Typer(help="DevPilot — WSL2 developer workstation bootstrapper")
+
+
+@app.callback()
+def main(
+    version: Annotated[
+        bool,
+        typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version and exit"),
+    ] = False,
+) -> None:
+    """DevPilot — WSL2 developer workstation bootstrapper."""
 console = Console()
 config = ConfigManager()
 
@@ -35,8 +54,6 @@ ALL_MODULES = {
     "vscode": VSCodeModule,
     "nvim": NvimModule,
 }
-
-INSTALL_ORDER = ["git", "python", "node", "cpp", "vscode", "nvim"]
 
 logger = setup_logger()
 
@@ -126,23 +143,19 @@ def doctor(
         bool,
         typer.Option("--ai", help="Use AI to diagnose failures"),
     ] = False,
+    fix: Annotated[
+        bool,
+        typer.Option("--fix", help="Auto-fix failing modules using known fixes"),
+    ] = False,
 ) -> None:
     """Run health checks across all modules and compute a health score."""
     if ai:
-        from devpilot.ai.client import _get_api_key
+        from devpilot.ai.client import _check_availability
 
-        if not _get_api_key():
-            console.print(
-                Panel.fit(
-                    "[yellow]AI features require OPENAI_API_KEY. "
-                    "Set it in your environment or in ~/.config/devpilot/config.yaml[/yellow]",
-                    border_style="yellow",
-                )
-            )
-            sys.exit(0)
+        _check_availability()
 
     modules = [cls() for cls in ALL_MODULES.values()]  # type: ignore[abstract]
-    results, health_score = run_all_doctors(modules, ai_diagnose=ai)
+    results, health_score = run_all_doctors(modules, ai_diagnose=ai, fix=fix)
 
     console.print(Panel.fit("[bold]DevPilot Doctor[/bold]", border_style="blue"))
     console.print()
@@ -180,19 +193,11 @@ def ask(
     question: Annotated[str, typer.Argument(help="Your question about your dev environment")],
 ) -> None:
     """Ask an AI expert a question about your WSL2 Ubuntu dev environment."""
-    from devpilot.ai.client import _get_api_key
+    from devpilot.ai.client import _check_availability
     from devpilot.ai.client import ask as ai_ask
     from devpilot.ai.context import gather_context
 
-    if not _get_api_key():
-        console.print(
-            Panel.fit(
-                "[yellow]AI features require OPENAI_API_KEY. "
-                "Set it in your environment or in ~/.config/devpilot/config.yaml[/yellow]",
-                border_style="yellow",
-            )
-        )
-        sys.exit(0)
+    _check_availability()
 
     console.print("[cyan]Gathering system context...[/cyan]")
     context = gather_context()
@@ -276,117 +281,6 @@ def inspect(
                 console.print(f"  [red]✗ {tool} failed[/red]")
 
 
-snapshot_app = typer.Typer(help="Save and restore environment snapshots")
-app.add_typer(snapshot_app, name="snapshot")
-
-
-@snapshot_app.command("save")
-def snapshot_save(
-    name: Annotated[
-        str,
-        typer.Option("--name", help="Name for this snapshot"),
-    ] = "",
-) -> None:
-    """Save the current environment state as a snapshot."""
-    from devpilot.snapshot.capture import capture_snapshot
-    from devpilot.snapshot.storage import save_snapshot
-
-    snap_name = name if name else "auto"
-    console.print(f"[cyan]Capturing snapshot as '{snap_name}'...[/cyan]")
-    snapshot = capture_snapshot(snap_name)
-    filepath = save_snapshot(snapshot)
-    console.print(f"[green]✓ Snapshot saved to {filepath}[/green]")
-
-
-@snapshot_app.command("list")
-def snapshot_list() -> None:
-    """List all saved snapshots."""
-    from devpilot.snapshot.storage import list_snapshots
-
-    snapshots = list_snapshots()
-    if not snapshots:
-        console.print("[yellow]No snapshots found.[/yellow]")
-        return
-
-    table = Table(title="[bold]Saved Snapshots[/bold]")
-    table.add_column("Name", style="cyan")
-    table.add_column("Timestamp", style="green")
-    table.add_column("DevPilot Version", style="dim")
-
-    for s in snapshots:
-        table.add_row(s.name, s.timestamp, s.devpilot_version)
-
-    console.print(table)
-
-
-@snapshot_app.command("restore")
-def snapshot_restore(
-    name: Annotated[str, typer.Argument(help="Name of the snapshot to restore")],
-) -> None:
-    """Restore the environment from a snapshot."""
-    from devpilot.snapshot.restore import restore_snapshot
-    from devpilot.snapshot.storage import load_snapshot
-
-    snapshot = load_snapshot(name)
-    console.print(
-        f"[bold]Restoring from snapshot: {snapshot.name} " f"({snapshot.timestamp})[/bold]"
-    )
-    restore_snapshot(snapshot)
-
-
-@snapshot_app.command("diff")
-def snapshot_diff(
-    name: Annotated[str, typer.Argument(help="Name of the snapshot to diff against")],
-) -> None:
-    """Compare the current environment to a saved snapshot."""
-    from devpilot.snapshot.capture import capture_snapshot
-    from devpilot.snapshot.diff import diff_snapshots
-    from devpilot.snapshot.storage import load_snapshot
-
-    saved = load_snapshot(name)
-    current = capture_snapshot("__current__")
-
-    diff = diff_snapshots(saved, current)
-
-    console.print(f"\n[bold]Snapshot: {saved.name} ({saved.timestamp})[/bold]\n")
-
-    if diff.added_packages:
-        console.print(f"[green]Packages added since snapshot ({len(diff.added_packages)}):[/green]")
-        for pkg in diff.added_packages:
-            console.print(f"  [green]{pkg}[/green]")
-        console.print()
-
-    if diff.removed_packages:
-        console.print(f"[red]Packages removed since snapshot ({len(diff.removed_packages)}):[/red]")
-        for pkg in diff.removed_packages:
-            console.print(f"  [red]{pkg}[/red]")
-        console.print()
-
-    if diff.changed_env_vars:
-        console.print("[yellow]Environment changes:[/yellow]")
-        for key, (old, new) in diff.changed_env_vars.items():
-            old_display = old or "not set"
-            new_display = new or "not set"
-            console.print(f"  [yellow]{key}:[/yellow] {old_display} → {new_display}")
-        console.print()
-
-    if diff.changed_config_files:
-        console.print("[yellow]Config file changes:[/yellow]")
-        for f in diff.changed_config_files:
-            console.print(f"  [yellow]{f}[/yellow]")
-        console.print()
-
-    if not any(
-        [
-            diff.added_packages,
-            diff.removed_packages,
-            diff.changed_env_vars,
-            diff.changed_config_files,
-        ]
-    ):
-        console.print("[green]No differences — snapshot matches current environment.[/green]")
-
-
 @app.command()
 def setup(
     module_name: Annotated[
@@ -403,7 +297,10 @@ def setup(
             raise typer.Exit(code=1)
         target_modules = [module_name]
     else:
-        target_modules = INSTALL_ORDER
+        from devpilot.modules.resolver import resolve_install_order
+
+        instances = {name: cls() for name, cls in ALL_MODULES.items()}  # type: ignore[abstract]
+        target_modules = resolve_install_order(instances)
 
     config_mgr = ConfigManager()
     failed: list[str] = []
@@ -439,6 +336,197 @@ def setup(
         console.print(f"[yellow]Completed with issues in: {', '.join(failed)}[/yellow]")
     else:
         console.print("[green]All modules installed successfully![/green]")
+
+
+# ---------------------------------------------------------------------------
+# snapshot command group
+# ---------------------------------------------------------------------------
+
+snapshot_app = typer.Typer(help="Capture and restore workstation state")
+app.add_typer(snapshot_app, name="snapshot")
+
+
+@snapshot_app.command("save")
+def snapshot_save(
+    name: Annotated[str, typer.Argument(help="Snapshot name")],
+) -> None:
+    """Capture the current environment state."""
+    from devpilot.snapshot.capture import capture_snapshot
+    from devpilot.snapshot.storage import save_snapshot
+
+    console.print(f"\n[cyan]Capturing environment snapshot '{name}'...[/cyan]")
+    snap = capture_snapshot(name)
+    path = save_snapshot(snap)
+    console.print(f"[green]✓ Snapshot saved to {path}[/green]")
+
+
+@snapshot_app.command("list")
+def snapshot_list() -> None:
+    """List all saved snapshots."""
+    from devpilot.snapshot.storage import list_snapshots
+
+    console.print()
+    snapshots = list_snapshots()
+    if not snapshots:
+        console.print("[yellow]No snapshots found.[/yellow]")
+        return
+
+    console.print("[bold]Saved snapshots:[/bold]\n")
+    for s in snapshots:
+        console.print(f"  [cyan]{s.name}[/cyan] — {s.timestamp} (v{s.devpilot_version})")
+
+
+@snapshot_app.command("restore")
+def snapshot_restore(
+    name: Annotated[str, typer.Argument(help="Snapshot name to restore")],
+) -> None:
+    """Restore environment from a saved snapshot."""
+    from devpilot.snapshot.storage import load_snapshot
+    from devpilot.snapshot.restore import restore_snapshot
+
+    try:
+        snap = load_snapshot(name)
+    except FileNotFoundError:
+        console.print(f"[red]Snapshot '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[bold]Restoring from snapshot: {snap.name}[/bold] ({snap.timestamp})")
+    restore_snapshot(snap)
+
+
+@snapshot_app.command("diff")
+def snapshot_diff(
+    name: Annotated[str, typer.Argument(help="Snapshot name to compare against")],
+) -> None:
+    """Compare a saved snapshot with the current environment."""
+    from devpilot.snapshot.capture import capture_snapshot
+    from devpilot.snapshot.diff import diff_snapshots
+    from devpilot.snapshot.storage import load_snapshot
+
+    try:
+        saved = load_snapshot(name)
+    except FileNotFoundError:
+        console.print(f"[red]Snapshot '{name}' not found.[/red]")
+        raise typer.Exit(code=1)
+
+    console.print(f"\n[cyan]Capturing current state for comparison...[/cyan]")
+    current = capture_snapshot("__current__")
+    diff = diff_snapshots(saved, current)
+
+    console.print(f"\n[bold]Diff: {name} → current[/bold]\n")
+
+    if diff.added_packages:
+        console.print("[green]Added packages:[/green]")
+        for pkg in diff.added_packages:
+            console.print(f"  + {pkg}")
+
+    if diff.removed_packages:
+        console.print("[red]Removed packages:[/red]")
+        for pkg in diff.removed_packages:
+            console.print(f"  - {pkg}")
+
+    if diff.changed_env_vars:
+        console.print("[yellow]Changed environment variables:[/yellow]")
+        for key, (old, new) in diff.changed_env_vars.items():
+            console.print(f"  {key}: {old} → {new}")
+
+    if diff.changed_config_files:
+        console.print("[yellow]Changed config files:[/yellow]")
+        for f in diff.changed_config_files:
+            console.print(f"  {f}")
+
+    if not (
+        diff.added_packages
+        or diff.removed_packages
+        or diff.changed_env_vars
+        or diff.changed_config_files
+    ):
+        console.print("[green]No differences found — environment matches snapshot.[/green]")
+
+
+# ---------------------------------------------------------------------------
+# profile command group
+# ---------------------------------------------------------------------------
+
+profile_app = typer.Typer(help="Install curated developer profiles")
+app.add_typer(profile_app, name="profile")
+
+
+@profile_app.command("list")
+def profile_list() -> None:
+    """List all available developer profiles."""
+    from devpilot.profiles import PROFILES
+
+    console.print("\n[bold]Available profiles:[/bold]\n")
+    for name, profile in PROFILES.items():
+        console.print(f"  [cyan]{name:<22}[/cyan] {profile.description}")
+
+
+@profile_app.command("show")
+def profile_show(
+    name: Annotated[str, typer.Argument(help="Profile name to show details for")],
+) -> None:
+    """Show what a profile contains without installing."""
+    from devpilot.profiles import PROFILES
+
+    if name not in PROFILES:
+        available = ", ".join(sorted(PROFILES))
+        console.print(f"[red]Unknown profile: {name}[/red]")
+        console.print(f"Available: {available}")
+        raise typer.Exit(code=1)
+
+    profile = PROFILES[name]
+    console.print(f"\n[bold]Profile: {profile.name}[/bold]")
+    console.print(f"  [dim]{profile.description}[/dim]\n")
+
+    if profile.apt_packages:
+        console.print(f"  [bold]Packages (apt):[/bold]  {' '.join(profile.apt_packages)}")
+    else:
+        console.print("  [bold]Packages (apt):[/bold]  (none)")
+
+    if profile.pip_packages:
+        console.print(f"  [bold]Packages (pip):[/bold]  {' '.join(profile.pip_packages)}")
+    else:
+        console.print("  [bold]Packages (pip):[/bold]  (none)")
+
+    if profile.npm_packages:
+        console.print(f"  [bold]Packages (npm):[/bold]  {' '.join(profile.npm_packages)}")
+    else:
+        console.print("  [bold]Packages (npm):[/bold]  (none)")
+
+    if profile.post_install_notes:
+        console.print("\n  [bold]Notes:[/bold]")
+        for note in profile.post_install_notes:
+            console.print(f"    {note}")
+
+
+@profile_app.command("install")
+def profile_install(
+    name: Annotated[str, typer.Argument(help="Profile name to install")],
+    dry_run: Annotated[
+        bool,
+        typer.Option("--dry-run", help="Show what would be installed without executing"),
+    ] = False,
+) -> None:
+    """Install all tools for a developer profile."""
+    from devpilot.profiles import PROFILES
+    from devpilot.profiles.installer import install_profile
+
+    if name not in PROFILES:
+        available = ", ".join(sorted(PROFILES))
+        console.print(f"[red]Unknown profile: {name}[/red]")
+        console.print(f"Available: {available}")
+        raise typer.Exit(code=1)
+
+    profile = PROFILES[name]
+    console.print(f"\n[bold]Installing profile: {profile.name}[/bold]")
+    console.print(f"  [dim]{profile.description}[/dim]\n")
+
+    success = install_profile(profile, dry_run=dry_run)
+    if success:
+        console.print("\n[green]Profile installed successfully![/green]")
+    else:
+        console.print("\n[yellow]Profile installed with some issues.[/yellow]")
 
 
 @app.command()
