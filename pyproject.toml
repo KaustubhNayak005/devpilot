@@ -26,6 +26,8 @@ dependencies = [
     "typer[all]>=0.15.1",
     "pyyaml>=6.0.2",
     "rich>=13.9.4",
+    "openai>=1.0",
+    "tenacity>=8.0",
 ]
 
 [project.optional-dependencies]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -120,10 +121,28 @@ def info() -> None:
 
 
 @app.command()
-def doctor() -> None:
+def doctor(
+    ai: Annotated[
+        bool,
+        typer.Option("--ai", help="Use AI to diagnose failures"),
+    ] = False,
+) -> None:
     """Run health checks across all modules and compute a health score."""
+    if ai:
+        from devpilot.ai.client import _get_api_key
+
+        if not _get_api_key():
+            console.print(
+                Panel.fit(
+                    "[yellow]AI features require OPENAI_API_KEY. "
+                    "Set it in your environment or in ~/.config/devpilot/config.yaml[/yellow]",
+                    border_style="yellow",
+                )
+            )
+            sys.exit(0)
+
     modules = [cls() for cls in ALL_MODULES.values()]  # type: ignore[abstract]
-    results, health_score = run_all_doctors(modules)
+    results, health_score = run_all_doctors(modules, ai_diagnose=ai)
 
     console.print(Panel.fit("[bold]DevPilot Doctor[/bold]", border_style="blue"))
     console.print()
@@ -154,6 +173,218 @@ def doctor() -> None:
             border_style=color,
         )
     )
+
+
+@app.command()
+def ask(
+    question: Annotated[str, typer.Argument(help="Your question about your dev environment")],
+) -> None:
+    """Ask an AI expert a question about your WSL2 Ubuntu dev environment."""
+    from devpilot.ai.client import _get_api_key
+    from devpilot.ai.client import ask as ai_ask
+    from devpilot.ai.context import gather_context
+
+    if not _get_api_key():
+        console.print(
+            Panel.fit(
+                "[yellow]AI features require OPENAI_API_KEY. "
+                "Set it in your environment or in ~/.config/devpilot/config.yaml[/yellow]",
+                border_style="yellow",
+            )
+        )
+        sys.exit(0)
+
+    console.print("[cyan]Gathering system context...[/cyan]")
+    context = gather_context()
+    console.print("[cyan]Thinking...[/cyan]")
+    console.print()
+    ai_ask(question, context)
+
+
+@app.command()
+def inspect(
+    path: Annotated[
+        str,
+        typer.Argument(help="Path to project directory to inspect"),
+    ] = ".",
+) -> None:
+    """Scan a project directory and detect what tools are needed."""
+    from rich.prompt import Confirm
+
+    from devpilot.inspector.checker import check_tools
+    from devpilot.inspector.detector import detect_stack
+    from devpilot.inspector.installer import MANUAL_INSTALL, install_missing
+
+    root = Path(path).resolve()
+    console.print(f"\n[bold]Scanning {root}...[/bold]\n")
+
+    stacks = detect_stack(path)
+
+    if not stacks:
+        console.print("[yellow]No known project stacks detected.[/yellow]")
+        return
+
+    console.print("[bold]Detected stacks:[/bold]")
+    for s in stacks:
+        console.print(f"  [cyan]{s.name}[/cyan] (confidence: {s.confidence})")
+
+    # Collect all unique tools
+    all_tools: list[str] = []
+    seen_tools: set[str] = set()
+    for s in stacks:
+        for tool in s.tools:
+            if tool not in seen_tools:
+                all_tools.append(tool)
+                seen_tools.add(tool)
+
+    console.print("\n[bold]Checking required tools:[/bold]")
+    tool_status = check_tools(all_tools)
+
+    table = Table(show_header=False)
+    table.add_column("Tool", style="cyan")
+    table.add_column("Status")
+    for tool in all_tools:
+        status = tool_status.get(tool, False)
+        style = "green" if status else "red"
+        label = "OK" if status else "MISSING"
+        table.add_row(tool, f"[{style}]{label}[/{style}]")
+    console.print(table)
+
+    missing = [t for t in all_tools if not tool_status.get(t, False)]
+    if not missing:
+        console.print("\n[green]All tools are installed![/green]")
+        return
+
+    manual_tools = [t for t in missing if t in MANUAL_INSTALL]
+    apt_tools = [t for t in missing if t not in MANUAL_INSTALL]
+
+    if manual_tools:
+        console.print("\n[yellow]Some tools require manual installation:[/yellow]")
+        for t in manual_tools:
+            console.print(f"  [yellow]{t}:[/yellow] {MANUAL_INSTALL[t]}")
+
+    if not apt_tools:
+        return
+
+    if Confirm.ask(f"\nInstall {len(apt_tools)} missing tool(s)?"):
+        for tool in apt_tools:
+            console.print(f"\n[cyan]Installing {tool}...[/cyan]")
+            success = install_missing(tool)
+            if success:
+                console.print(f"  [green]✓ {tool} installed[/green]")
+            else:
+                console.print(f"  [red]✗ {tool} failed[/red]")
+
+
+snapshot_app = typer.Typer(help="Save and restore environment snapshots")
+app.add_typer(snapshot_app, name="snapshot")
+
+
+@snapshot_app.command("save")
+def snapshot_save(
+    name: Annotated[
+        str,
+        typer.Option("--name", help="Name for this snapshot"),
+    ] = "",
+) -> None:
+    """Save the current environment state as a snapshot."""
+    from devpilot.snapshot.capture import capture_snapshot
+    from devpilot.snapshot.storage import save_snapshot
+
+    snap_name = name if name else "auto"
+    console.print(f"[cyan]Capturing snapshot as '{snap_name}'...[/cyan]")
+    snapshot = capture_snapshot(snap_name)
+    filepath = save_snapshot(snapshot)
+    console.print(f"[green]✓ Snapshot saved to {filepath}[/green]")
+
+
+@snapshot_app.command("list")
+def snapshot_list() -> None:
+    """List all saved snapshots."""
+    from devpilot.snapshot.storage import list_snapshots
+
+    snapshots = list_snapshots()
+    if not snapshots:
+        console.print("[yellow]No snapshots found.[/yellow]")
+        return
+
+    table = Table(title="[bold]Saved Snapshots[/bold]")
+    table.add_column("Name", style="cyan")
+    table.add_column("Timestamp", style="green")
+    table.add_column("DevPilot Version", style="dim")
+
+    for s in snapshots:
+        table.add_row(s.name, s.timestamp, s.devpilot_version)
+
+    console.print(table)
+
+
+@snapshot_app.command("restore")
+def snapshot_restore(
+    name: Annotated[str, typer.Argument(help="Name of the snapshot to restore")],
+) -> None:
+    """Restore the environment from a snapshot."""
+    from devpilot.snapshot.restore import restore_snapshot
+    from devpilot.snapshot.storage import load_snapshot
+
+    snapshot = load_snapshot(name)
+    console.print(
+        f"[bold]Restoring from snapshot: {snapshot.name} " f"({snapshot.timestamp})[/bold]"
+    )
+    restore_snapshot(snapshot)
+
+
+@snapshot_app.command("diff")
+def snapshot_diff(
+    name: Annotated[str, typer.Argument(help="Name of the snapshot to diff against")],
+) -> None:
+    """Compare the current environment to a saved snapshot."""
+    from devpilot.snapshot.capture import capture_snapshot
+    from devpilot.snapshot.diff import diff_snapshots
+    from devpilot.snapshot.storage import load_snapshot
+
+    saved = load_snapshot(name)
+    current = capture_snapshot("__current__")
+
+    diff = diff_snapshots(saved, current)
+
+    console.print(f"\n[bold]Snapshot: {saved.name} ({saved.timestamp})[/bold]\n")
+
+    if diff.added_packages:
+        console.print(f"[green]Packages added since snapshot ({len(diff.added_packages)}):[/green]")
+        for pkg in diff.added_packages:
+            console.print(f"  [green]{pkg}[/green]")
+        console.print()
+
+    if diff.removed_packages:
+        console.print(f"[red]Packages removed since snapshot ({len(diff.removed_packages)}):[/red]")
+        for pkg in diff.removed_packages:
+            console.print(f"  [red]{pkg}[/red]")
+        console.print()
+
+    if diff.changed_env_vars:
+        console.print("[yellow]Environment changes:[/yellow]")
+        for key, (old, new) in diff.changed_env_vars.items():
+            old_display = old or "not set"
+            new_display = new or "not set"
+            console.print(f"  [yellow]{key}:[/yellow] {old_display} → {new_display}")
+        console.print()
+
+    if diff.changed_config_files:
+        console.print("[yellow]Config file changes:[/yellow]")
+        for f in diff.changed_config_files:
+            console.print(f"  [yellow]{f}[/yellow]")
+        console.print()
+
+    if not any(
+        [
+            diff.added_packages,
+            diff.removed_packages,
+            diff.changed_env_vars,
+            diff.changed_config_files,
+        ]
+    ):
+        console.print("[green]No differences — snapshot matches current environment.[/green]")
 
 
 @app.command()
