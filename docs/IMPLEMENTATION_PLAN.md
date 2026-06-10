@@ -1,5 +1,11 @@
 # DevPilot — Full Implementation Plan
 
+> **Historical document** — this is the original implementation blueprint for v0.1.0.  
+> The current version is v0.2.0 (see [CHANGELOG.md](./CHANGELOG.md) for all features).  
+> v0.2.0 additions (AI subsystem, inspector, snapshot, profiles, resolver, doctor fixes) were  
+> implemented after this plan. See [ARCHITECTURE.md](./ARCHITECTURE.md) and [DEEP_DIVE.md](./DEEP_DIVE.md)  
+> for current state.
+
 ## Architecture Overview
 
 DevPilot is a pipx-installable Typer CLI that bootstraps WSL2 Ubuntu dev environments. Six modules (git, python, node, cpp, vscode, nvim) implement a common ABC. Doctor aggregates checks into a health score. Config and logging use XDG paths. Templates are embedded f-strings. All output flows through Rich.

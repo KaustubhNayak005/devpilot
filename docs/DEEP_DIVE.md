@@ -18,13 +18,19 @@ This document explains how every component of DevPilot works internally. After r
    - [C/C++ Module](#cc-module)
    - [VS Code Module](#vs-code-module)
    - [Neovim Module](#neovim-module)
-7. [Shell Utilities Safety Model](#7-shell-utilities-safety-model)
-8. [Config Manager Internals](#8-config-manager-internals)
-9. [Logging Internals](#9-logging-internals)
-10. [Test Architecture & Mocking Strategy](#10-test-architecture--mocking-strategy)
-11. [CI Pipeline Design](#11-ci-pipeline-design)
-12. [How to Add a New Module](#12-how-to-add-a-new-module)
-13. [Common Issues & Debugging](#13-common-issues--debugging)
+7. [AI Subsystem Deep Dive](#7-ai-subsystem-deep-dive)
+8. [Doctor Fixes Subsystem](#8-doctor-fixes-subsystem)
+9. [Module Resolver (Topological Sort)](#9-module-resolver-topological-sort)
+10. [Inspector Subsystem Deep Dive](#10-inspector-subsystem-deep-dive)
+11. [Snapshot Subsystem Deep Dive](#11-snapshot-subsystem-deep-dive)
+12. [Profiles Subsystem Deep Dive](#12-profiles-subsystem-deep-dive)
+13. [Shell Utilities Safety Model](#13-shell-utilities-safety-model)
+14. [Config Manager Internals](#14-config-manager-internals)
+15. [Logging Internals](#15-logging-internals)
+16. [Test Architecture & Mocking Strategy](#16-test-architecture--mocking-strategy)
+17. [CI Pipeline Design](#17-ci-pipeline-design)
+18. [How to Add a New Module](#18-how-to-add-a-new-module)
+19. [Common Issues & Debugging](#19-common-issues--debugging)
 
 ---
 
@@ -45,11 +51,11 @@ ALL_MODULES = {
     "vscode": VSCodeModule,
     "nvim": NvimModule,
 }
-
-INSTALL_ORDER = ["git", "python", "node", "cpp", "vscode", "nvim"]
 ```
 
-If no argument is given, `target_modules = INSTALL_ORDER`. If a specific module is named, `target_modules = [module_name]` and the name is validated against `ALL_MODULES` keys.
+If no argument is given, the resolver (`modules/resolver.py`) runs topological sort on all module instances using Kahn's algorithm. Module dependencies are declared via the `dependencies: list[str]` class attribute. With all dependencies currently `[]`, the resolver returns modules in any order. If dependencies exist between modules, the resolver guarantees dependents come after their dependencies. Circular dependencies raise `ValueError`.
+
+If a specific module is named, `target_modules = [module_name]` and the name is validated against `ALL_MODULES` keys.
 
 ### Progress Bar
 
@@ -70,19 +76,6 @@ For each module name in `target_modules`:
 
 After the loop, if `failed` is non-empty, print a yellow message listing failed modules. Otherwise print green success.
 
-### Why This Order?
-
-```
-git → python → node → cpp → vscode → nvim
-```
-
-- **git** first because it has zero dependencies and is a prerequisite for cloning/lazy.nvim bootstrapping.
-- **python** second because it's lightweight and needed for pip/pipx workflows.
-- **node** third because it's a dependency of nvim's Mason and nvim-cmp plugins.
-- **cpp** fourth because it's the heaviest install and self-contained.
-- **vscode** fifth because it's a detection-only module (no actual install).
-- **nvim** last because it depends on node being present for LSP and completion.
-
 ---
 
 ## 2. How `devpilot doctor` Works
@@ -94,6 +87,8 @@ devpilot doctor
   → doctor() in cli/main.py
     → creates all 6 module instances
     → calls run_all_doctors(modules) from doctor/runner.py
+      → optionally applies --fix (offline auto-fix from fixes.py)
+      → optionally applies --ai (AI-powered Root Cause Analysis)
     → renders results in Rich table
     → computes and displays health score in Rich panel
 ```
@@ -101,23 +96,19 @@ devpilot doctor
 ### `run_all_doctors()` Internals
 
 ```python
-def run_all_doctors(modules: list[BaseModule]) -> tuple[list[CheckResult], int]:
-    all_results: list[CheckResult] = []
-    for module in modules:
-        all_results.extend(module.doctor())
-
-    total = len(all_results)
-    passed = sum(1 for r in all_results if r.passed)
-
-    health_score = round((passed / total) * 100) if total > 0 else 100
-    return all_results, health_score
+def run_all_doctors(
+    modules: list[BaseModule],
+    ai_diagnose: bool = False,
+    fix: bool = False,
+) -> tuple[list[CheckResult], int]:
 ```
 
 1. Iterates every module, calling `module.doctor()`.
 2. Flattens all `CheckResult` objects into one list.
-3. Counts total checks and passed checks.
-4. Health score = `round((passed / total) * 100)`. If there are zero checks (shouldn't happen), score is 100.
-5. Returns the flat list and the integer score.
+3. If `fix=True`, candidates are modules whose `doctor()` returned at least one failing check. Each candidate's known fix from `fixes.py` is executed. Modules are then re-checked via `doctor()`.
+4. If `ai_diagnose=True`, any module still failing after `--fix` (or all failing modules if `--fix` not used) is sent to the AI provider for deeper Root Cause Analysis.
+5. Health score = `round((passed / total) * 100)`. If there are zero checks, score is 100.
+6. Returns the flat list and the integer score.
 
 ### Rendering
 
@@ -264,6 +255,7 @@ Same as Python but:
 ```python
 class BaseModule(ABC):
     name: str
+    dependencies: list[str] = []
 
     @abstractmethod
     def install(self) -> bool: ...
@@ -276,9 +268,10 @@ class BaseModule(ABC):
 Every module must:
 
 1. **Set `name`** as a class attribute (e.g., `name: str = "git"`).
-2. **Implement `install()`** — performs the actual tool installation and configuration. Returns `True` if installation succeeded (tools are usable), `False` otherwise. Should be idempotent (safe to run twice).
-3. **Implement `verify()`** — runs quick post-install checks using only CLI commands. Returns a list of `CheckResult` objects. No interactive input.
-4. **Implement `doctor()`** — runs comprehensive health checks. Can delegate to `verify()` or add deeper checks.
+2. **Optionally set `dependencies`** — a list of other module names this module depends on. Used by the topological sort resolver.
+3. **Implement `install()`** — performs the actual tool installation and configuration. Returns `True` if installation succeeded (tools are usable), `False` otherwise. Should be idempotent (safe to run twice).
+4. **Implement `verify()`** — runs quick post-install checks using only CLI commands. Returns a list of `CheckResult` objects. No interactive input.
+5. **Implement `doctor()`** — runs comprehensive health checks. Can delegate to `verify()` or add deeper checks.
 
 ### CheckResult Dataclass
 
@@ -460,7 +453,7 @@ This is the most complex module. It installs Neovim plus companion tools, deploy
 1. Runs `apt_install(["neovim", "ripgrep", "fd-find"])`.
 2. Verifies `which("nvim")` exists. Returns `False` if not.
 3. **`fd` symlink**: Ubuntu's `fd-find` package installs the binary as `fdfind`. If `fdfind` is found but `fd` is not, creates a symlink: `sudo ln -sf $(which fdfind) /usr/local/bin/fd`. This ensures Telescope's `fd` dependency works.
-4. **Deploy config**: Calls `_deploy_config()` which writes the full `INIT_LUA_CONTENT` (a 379-line string constant) to `~/.config/nvim/init.lua`. Creates the parent directory if needed.
+4. **Deploy config**: Calls `_deploy_config()` which writes the full `INIT_LUA_CONTENT` (a multi-line string constant) to `~/.config/nvim/init.lua`. Creates the parent directory if needed.
 5. **Headless Lazy sync**: Runs `nvim --headless "+Lazy! sync" +qa` with a 600s timeout. This downloads and installs all plugins defined in the init.lua. Warns if return code is non-zero.
 6. **Headless checkhealth**: Runs `nvim --headless "+checkhealth" +qa` with a 120s timeout. Logs pass/fail.
 7. Returns `True`.
@@ -507,7 +500,391 @@ Delegates to `verify()`.
 
 ---
 
-## 7. Shell Utilities Safety Model
+## 7. AI Subsystem Deep Dive
+
+The AI subsystem (`devpilot/ai/`) wraps multiple LLM providers behind a common interface. It powers two commands: `devpilot doctor --ai` (diagnose failures) and `devpilot ask` (free-form Q&A).
+
+### Architecture
+
+```
+devpilot/ai/
+├── __init__.py
+├── base.py          # AIProvider ABC + DiagnosisResult dataclass + prompt templates
+├── client.py        # Public API: diagnose(), ask()
+├── context.py       # gather_context() — collects system info for AI
+├── factory.py       # get_provider() — reads DEVPILOT_AI_PROVIDER, returns provider
+└── providers/
+    ├── __init__.py   # Lazy-loaded — imports only requested provider
+    ├── openai.py     # OpenAIProvider
+    ├── anthropic.py  # AnthropicProvider
+    ├── gemini.py     # GeminiProvider
+    └── ollama.py     # OllamaProvider
+```
+
+### AIProvider ABC
+
+```python
+class AIProvider(ABC):
+    @abstractmethod
+    def is_available(self) -> bool: ...
+    @abstractmethod
+    def generate(self, prompt: str) -> str: ...
+```
+
+Every provider implements two methods:
+- `is_available()` — checks that required environment variables and SDK are accessible.
+- `generate(prompt)` — sends a prompt to the LLM and returns the response text.
+
+### DiagnosisResult Dataclass
+
+```python
+@dataclass
+class DiagnosisResult:
+    root_cause: str     # Explanation of why the check failed
+    explanation: str    # Detailed technical reasoning
+    fix_command: str    # Shell command to resolve the issue
+    confidence: float   # 0.0 — 1.0 confidence score
+```
+
+### Factory (`factory.py`)
+
+```python
+def get_provider() -> AIProvider:
+```
+
+Reads `DEVPILOT_AI_PROVIDER` from the environment (loaded via `.env` and `python-dotenv` in `devpilot/__init__.py`). Supported values: `openai`, `anthropic`, `gemini`, `ollama`.
+
+If `DEVPILOT_AI_PROVIDER` is unset, the factory iterates all registered providers, calls `is_available()` on each, and returns the first available one (auto-detection).
+
+Raises `SystemExit` if:
+- The named provider is unknown.
+- The named provider is not configured (missing API keys / env vars).
+- No provider is available and auto-detection fails.
+
+### Providers
+
+| Provider   | Required Env Vars                   | SDK                      |
+| ---------- | ----------------------------------- | ------------------------ |
+| OpenAI     | `OPENAI_API_KEY`, `OPENAI_MODEL`    | `openai`                 |
+| Anthropic  | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | `anthropic`            |
+| Gemini     | `GEMINI_API_KEY`, `GEMINI_MODEL`    | `google-generativeai`    |
+| Ollama     | `OLLAMA_BASE_URL`, `OLLAMA_MODEL`   | `requests`               |
+
+### Lazy Provider Loading
+
+`devpilot/ai/providers/__init__.py` uses per-provider try/except blocks to import each provider class. If a provider's SDK is not installed, the import is skipped silently rather than crashing the entire app. Only when the user explicitly selects that provider (or auto-detection tries it) does the missing dependency become a visible error.
+
+### `gather_context()` — System Info for AI
+
+The `context.py` module collects:
+- Ubuntu version (`/etc/os-release`)
+- Kernel version
+- WSL detection
+- PATH environment variable entries
+- Installed apt packages (from `dpkg -l`)
+
+This context is injected into every AI prompt so the LLM has real system data for accurate diagnosis.
+
+### Client Public API (`client.py`)
+
+```python
+def diagnose(failures: list[dict], context: str) -> list[DiagnosisResult]:
+    """Send module check failures to the AI for root cause analysis."""
+
+def ask(question: str, context: str) -> None:
+    """Send a free-form question to the AI with system context."""
+```
+
+### `devpilot doctor --ai` Data Flow
+
+```
+User runs command
+      │
+      ▼
+CLI layer calls doctor runner
+      │
+      ▼
+Doctor runner executes all module.doctor() checks
+      │
+      ▼
+Failures collected as list[dict]
+      │
+      ▼
+context.gather_context() collects system info
+      │
+      ▼
+ai/client.py delegates to provider via factory
+      │
+      ▼
+Provider sends prompt, parses response into DiagnosisResult
+      │
+      ▼
+Rich panel displays root cause + explanation + fix
+```
+
+### `devpilot ask` Data Flow
+
+```
+User runs `devpilot ask "why is cmake failing?"`
+      │
+      ▼
+CLI checks AI availability via _check_availability()
+      │
+      ▼
+context.gather_context() collects system context
+      │
+      ▼
+client.ask() formats question + context into prompt
+      │
+      ▼
+Provider generates response, streamed or returned as text
+      │
+      ▼
+Response displayed in Rich console
+```
+
+---
+
+## 8. Doctor Fixes Subsystem
+
+The fixes subsystem (`devpilot/doctor/fixes.py`) provides offline self-healing without any LLM. It's a simple registry of known-good fixes for each module.
+
+### FIXES Registry
+
+```python
+FIXES: dict[str, Callable[[], bool]] = {
+    "git": _fix_git,
+    "python": _fix_python,
+    "node": _fix_node,
+    "cpp": _fix_cpp,
+    "nvim": _fix_nvim,
+    "vscode": _fix_vscode,
+}
+```
+
+Each fix function:
+1. Runs the appropriate `apt_install()` for the module's core packages.
+2. Returns `True` if the fix was applied successfully, `False` otherwise.
+3. The vscode fix always returns `False` (VS Code cannot be installed via apt in WSL2).
+
+### Integration with Doctor Runner
+
+When `devpilot doctor --fix` runs:
+1. All modules are doctored. Failing modules are collected.
+2. For each failing module with a known fix, the fix function is executed.
+3. After all fixes run, modules are re-checked via `doctor()`.
+4. If `--ai` is also specified, any module still failing after offline fixes is passed to the AI.
+
+---
+
+## 9. Module Resolver (Topological Sort)
+
+The resolver (`devpilot/modules/resolver.py`) replaces the old hardcoded `INSTALL_ORDER` list with a proper dependency graph.
+
+### Kahn's Algorithm
+
+```python
+def resolve_install_order(
+    instances: dict[str, BaseModule]
+) -> list[str]:
+```
+
+1. Builds an adjacency list from each module's `dependencies` attribute.
+2. Counts in-degree (number of dependencies) for each module.
+3. Iteratively adds modules with zero in-degree to the result, decrementing dependents' in-degrees.
+4. Returns the sorted module name list.
+
+### Rules
+
+- If all modules have `dependencies = []`, the resolver returns modules in any order (current state for all 6 modules).
+- When dependencies are declared, dependents are guaranteed to come after their dependencies.
+- Circular dependencies raise `ValueError`.
+- Unknown dependencies (modules that don't exist in the registry) are silently skipped.
+
+---
+
+## 10. Inspector Subsystem Deep Dive
+
+The inspector (`devpilot/inspector/`) scans any project directory and identifies the development stacks in use.
+
+### Architecture
+
+```
+devpilot/inspector/
+├── __init__.py
+├── detector.py    # detect_stack() — file-based stack detection
+├── checker.py     # check_tools() — which() availability check
+└── installer.py   # install_missing() + MANUAL_INSTALL registry
+```
+
+### Detector (`detector.py`)
+
+```python
+def detect_stack(path: str) -> list[StackResult]:
+```
+
+Scans the target directory (max depth 3) for indicator files:
+
+| Stack        | Detection Files                    |
+| ------------ | ---------------------------------- |
+| Flutter      | `pubspec.yaml`                     |
+| C++          | `CMakeLists.txt`                   |
+| Rust         | `Cargo.toml`                       |
+| Go           | `go.mod`                           |
+| Node.js      | `package.json`                     |
+| Python       | `pyproject.toml`, `requirements.txt` |
+| Docker       | `Dockerfile`                       |
+
+### StackResult
+
+```python
+@dataclass
+class StackResult:
+    name: str               # e.g. "Python", "Node.js"
+    confidence: str         # "definite" or "likely"
+    tools: list[str]        # Required tools for this stack
+```
+
+Confidence is "definite" when a primary indicator file is found. Secondary matches (e.g., CMake files in a Python project) get "likely" confidence.
+
+### Checker (`checker.py`)
+
+```python
+def check_tools(tools: list[str]) -> dict[str, bool]:
+```
+
+Runs `which()` for each tool name. Returns a `{tool_name: is_installed}` dictionary.
+
+### Installer (`installer.py`)
+
+```python
+MANUAL_INSTALL: dict[str, str] = {
+    "flutter": "...",
+    "docker": "...",
+    "android-sdk": "...",
+}
+
+def install_missing(tool: str) -> bool:
+```
+
+Tools in `MANUAL_INSTALL` cannot be auto-installed (they require complex setup). The user gets documentation links. All other tools are installed via `apt_install()`.
+
+---
+
+## 11. Snapshot Subsystem Deep Dive
+
+The snapshot subsystem (`devpilot/snapshot/`) captures, stores, compares, and restores workstation state.
+
+### Architecture
+
+```
+devpilot/snapshot/
+├── __init__.py
+├── capture.py    # Snapshot dataclass, capture_snapshot()
+├── storage.py    # save/load/list JSON files
+├── diff.py       # diff_snapshots() — compare saved vs current
+└── restore.py    # restore_snapshot() — interactive re-install
+```
+
+### Snapshot Dataclass
+
+```python
+@dataclass
+class Snapshot:
+    name: str
+    timestamp: str
+    devpilot_version: str
+    packages: list[str]              # apt packages (dpkg -l)
+    git_config: dict[str, str]       # user.name, user.email
+    env_vars: dict[str, str]         # key environment variables
+    config_file_hashes: dict[str, str]  # SHA-256 of dotfiles
+    devpilot_config: dict             # DevPilot config.yaml contents
+```
+
+### Capture (`capture.py`)
+
+`capture_snapshot(name)` collects state by:
+1. Reading installed apt packages via `dpkg -l`.
+2. Reading git global config.
+3. Capturing key environment variables (PATH, HOME, SHELL).
+4. Computing SHA-256 hashes of tracked dotfiles (`.bashrc`, `.gitconfig`, `init.lua`).
+5. Reading the DevPilot `config.yaml`.
+
+### Storage (`storage.py`)
+
+Snapshots are stored as JSON files in `~/.config/devpilot/snapshots/`. Naming is sanitized (alphanumeric + hyphens/underscores only). Functions: `save_snapshot()`, `load_snapshot()`, `list_snapshots()`.
+
+### Diff (`diff.py`)
+
+`diff_snapshots(saved, current)` returns a `SnapshotDiff`:
+```python
+@dataclass
+class SnapshotDiff:
+    added_packages: list[str]
+    removed_packages: list[str]
+    changed_env_vars: dict[str, tuple[str, str]]  # (old, new)
+    changed_config_files: list[str]
+```
+
+### Restore (`restore.py`)
+
+`restore_snapshot(snap)` interactively re-installs missing packages. Added packages (in current but not saved) are flagged for review. Config file changes are noted but not auto-applied.
+
+---
+
+## 12. Profiles Subsystem Deep Dive
+
+The profiles subsystem (`devpilot/profiles/`) provides curated bundles of tools for specific development workflows.
+
+### Architecture
+
+```
+devpilot/profiles/
+├── __init__.py
+├── definitions.py   # Profile dataclass + PROFILES registry
+└── installer.py     # install_profile() — apt/pip/npm runner
+```
+
+### Profile Dataclass
+
+```python
+@dataclass
+class Profile:
+    name: str
+    description: str
+    apt_packages: list[str] = field(default_factory=list)
+    pip_packages: list[str] = field(default_factory=list)
+    npm_packages: list[str] = field(default_factory=list)
+    post_install_notes: list[str] = field(default_factory=list)
+```
+
+### Six Curated Profiles
+
+| Profile                   | Target Workflow                                        |
+| ------------------------- | ------------------------------------------------------ |
+| `cpp`                     | Compiler, debugger, build tools, LSP                   |
+| `python`                  | Interpreter, linters (ruff), formatters (black)        |
+| `flutter`                 | Flutter/Dart mobile and web                            |
+| `ai-engineer`             | Python stack, PyTorch, Jupyter                         |
+| `competitive-programming` | Fast compilers, debuggers, contest tools               |
+| `fullstack`               | Node.js + Python + Docker                              |
+
+### Installer (`installer.py`)
+
+```python
+def install_profile(profile: Profile, dry_run: bool = False) -> bool:
+```
+
+1. If `dry_run=True`, prints what would be installed and returns `True` without executing.
+2. Installs apt packages via `apt_install()`.
+3. Installs pip packages via `pip install`.
+4. Installs npm packages via `npm install -g`.
+5. Displays post-install notes.
+6. Returns `True` if all package installations succeeded, `False` if any failed.
+
+---
+
+## 13. Shell Utilities Safety Model
 
 ### `run_command()`
 
@@ -555,7 +932,7 @@ Note: `sudo` is required because apt needs root. This is safe because the comman
 
 ---
 
-## 8. Config Manager Internals
+## 14. Config Manager Internals
 
 ### File Location
 
@@ -607,7 +984,7 @@ preferences:
 
 ---
 
-## 9. Logging Internals
+## 15. Logging Internals
 
 ### File Location
 
@@ -663,11 +1040,13 @@ Log levels used:
 
 ---
 
-## 10. Test Architecture & Mocking Strategy
+## 16. Test Architecture & Mocking Strategy
 
 ### Philosophy
 
 Tests verify **logic**, not side effects. Every test file mocks `subprocess.run`, `shutil.which`, and filesystem operations. No test requires actual tools to be installed.
+
+109 tests across 18 test files.
 
 ### Test Structure
 
@@ -676,13 +1055,20 @@ tests/
 ├── conftest.py             ← shared fixtures
 ├── test_config_manager.py  ← 6 tests for ConfigManager
 ├── test_doctor_runner.py   ← 5 tests for health score logic
+├── test_doctor_fixes.py    ← 9 tests for fix functions and runner integration
 ├── test_shell.py           ← 8 tests for shell utilities
 ├── test_module_git.py      ← 4 tests for GitModule.verify()
 ├── test_module_python.py   ← 3 tests for PythonModule.verify()
 ├── test_module_node.py     ← 3 tests for NodeModule.verify()
 ├── test_module_cpp.py      ← 2 tests for CppModule.verify()
 ├── test_module_vscode.py   ← 3 tests for VSCodeModule.verify()
-└── test_module_nvim.py     ← 3 tests for NvimModule.verify()
+├── test_module_nvim.py     ← 3 tests for NvimModule.verify()
+├── test_ai.py              ← 10 tests for context gathering and AI client
+├── test_ai_factory.py      ← 8 tests for provider factory selection and fallback
+├── test_inspector.py       ← 18 tests for detector, checker, installer
+├── test_snapshot.py        ← 12 tests for capture, storage, diff
+├── test_profiles.py        ← 9 tests for profile definitions and installer
+├── test_resolver.py        ← 6 tests for topological sort
 ```
 
 ### Shared Fixtures (`conftest.py`)
@@ -709,6 +1095,7 @@ Every test follows the same pattern:
 | ------------------------ | ----------------------------------------------------------- |
 | `test_config_manager.py` | Load defaults, save/load roundtrip, mark_installed dedup, get/set preferences, corrupted YAML fallback |
 | `test_doctor_runner.py`  | Health score: all-passing=100, all-failing=0, mixed=50, empty=100, single mixed=50 |
+| `test_doctor_fixes.py`   | Fix commands for git/python/node/vscode, FIXES registry completeness, fix runs on failing modules, unknown modules skipped |
 | `test_shell.py`          | run_command args passthrough, cwd handling, check=True raises, which found/not_found, apt_install success/failure/timeout |
 | `test_module_git.py`     | Verify git found with version, git missing, config set, config missing |
 | `test_module_python.py`  | Verify python found with version, python missing, venv available |
@@ -716,42 +1103,46 @@ Every test follows the same pattern:
 | `test_module_cpp.py`     | Verify all 7 tools found and pass, all 6 tools missing |
 | `test_module_vscode.py`  | Verify code found + WSL extension, code missing, WSL extension missing |
 | `test_module_nvim.py`    | Verify all 4 checks pass, all missing, fd only as fdfind |
+| `test_ai.py`             | Context gathering (os-release, PATH, coverage), client diagnose parsing, invalid JSON handling, ask returns response |
+| `test_ai_factory.py`     | Provider selection per env var, fallback to first available, error for unknown/unconfigured providers |
+| `test_inspector.py`      | Stack detection for all 7 stacks + empty dir, tool checking, install success/failure/manual/unknown |
+| `test_snapshot.py`       | Capture timestamp validity, storage sanitize/save/load/list, diff for added/removed/changed |
+| `test_profiles.py`       | Profile field validation, registry count, profile contents, dry-run, apt/pip/npm install paths, error handling |
+| `test_resolver.py`       | No-deps ordering, dependency ordering, multi-deps, circular detection, unknown dep skipping, diamond resolution |
 
 ---
 
-## 11. CI Pipeline Design
+## 17. CI Pipeline Design
 
 ### Trigger
 
 ```yaml
 on:
   push:
-    branches: [main]
+    branches: [main, develop]
   pull_request:
     branches: [main]
 ```
 
-Runs on every push to `main` and every PR targeting `main`.
+Runs on every push to `main`/`develop` and every PR targeting `main`.
 
-### Job: `lint-typecheck-test`
+### Jobs (4 parallel stages)
 
-Runs on `ubuntu-24.04`. Steps:
+**Lint** — ruff check . (zero tolerance)
 
-1. **Checkout** — `actions/checkout@v4`.
-2. **Set up Python 3.12** — `actions/setup-python@v5`.
-3. **Install dependencies** — `pip install -e ".[dev]"` installs the package in editable mode with all dev dependencies (pytest, ruff, black, mypy).
-4. **Ruff check** — `ruff check src/ tests/` — zero tolerance for lint errors.
-5. **Black check** — `black --check src/ tests/` — fails if any file is not formatted.
-6. **Mypy type check** — `mypy src/` — strict mode, fails on any type error.
-7. **Pytest** — `pytest -v` — runs all 37 tests.
+**Type check** — mypy devpilot/ --ignore-missing-imports
+
+**Tests** — pytest --cov=devpilot --cov-report=xml, plus Codecov upload
+
+**Build verification** — python -m build (needs lint, type-check, and test to pass first)
 
 ### Why This Order
 
-Lint and format first (fast feedback), then type checking (catches logic errors), then tests last (since tests won't pass if types are wrong).
+Lint and type-check run first (fast feedback). Tests run in parallel. Build verification gates on all three — ensures the package can be built only if everything else passes.
 
 ---
 
-## 12. How to Add a New Module
+## 18. How to Add a New Module
 
 ### Step-by-Step Guide
 
@@ -772,6 +1163,7 @@ Lint and format first (fast feedback), then type checking (catches logic errors)
 
    class MyModule(BaseModule):
        name: str = "my-tool"
+       dependencies: list[str] = []
 
        def install(self) -> bool:
            # Install your tool here
@@ -796,21 +1188,26 @@ Lint and format first (fast feedback), then type checking (catches logic errors)
        ...
        "my-tool": MyModule,
    }
-
-   INSTALL_ORDER = [..., "my-tool"]
    ```
 
-4. **Write tests**
+4. **Add a fix in `doctor/fixes.py`**
+   ```python
+   def _fix_my_tool() -> bool:
+       return apt_install(["my-tool"])
+
+   FIXES["my-tool"] = _fix_my_tool
+   ```
+
+5. **Write tests**
    ```
    tests/test_module_my.py
    ```
    Mock `which()` and `run_command()`, call `module.verify()`, assert on results.
 
-5. **Run full validation**
+6. **Run full validation**
    ```bash
-   ruff check src/ tests/
-   black --check src/ tests/
-   mypy src/
+   ruff check .
+   mypy devpilot/ --ignore-missing-imports
    pytest -v
    ```
 
@@ -826,7 +1223,7 @@ Lint and format first (fast feedback), then type checking (catches logic errors)
 
 ---
 
-## 13. Common Issues & Debugging
+## 19. Common Issues & Debugging
 
 ### "Module X not found in PATH"
 
@@ -848,6 +1245,15 @@ The headless Neovim sync may fail if:
 - Network issues (the sync downloads many plugins from GitHub)
 
 Re-run: `devpilot setup nvim` or manually: `nvim --headless "+Lazy! sync" +qa`
+
+### "AI features not working"
+
+Check that your `.env` file exists and has valid API keys:
+```bash
+cat .env
+```
+
+Verify with `devpilot doctor --ai`.
 
 ### "Logs are not being written"
 
