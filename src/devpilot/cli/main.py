@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from typing import Annotated
 
@@ -381,8 +380,8 @@ def snapshot_restore(
     name: Annotated[str, typer.Argument(help="Snapshot name to restore")],
 ) -> None:
     """Restore environment from a saved snapshot."""
-    from devpilot.snapshot.storage import load_snapshot
     from devpilot.snapshot.restore import restore_snapshot
+    from devpilot.snapshot.storage import load_snapshot
 
     try:
         snap = load_snapshot(name)
@@ -409,7 +408,7 @@ def snapshot_diff(
         console.print(f"[red]Snapshot '{name}' not found.[/red]")
         raise typer.Exit(code=1)
 
-    console.print(f"\n[cyan]Capturing current state for comparison...[/cyan]")
+    console.print("\n[cyan]Capturing current state for comparison...[/cyan]")
     current = capture_snapshot("__current__")
     diff = diff_snapshots(saved, current)
 
