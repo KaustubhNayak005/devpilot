@@ -38,7 +38,12 @@ app = typer.Typer(help="DevPilot — WSL2 developer workstation bootstrapper")
 def main(
     version: Annotated[
         bool,
-        typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version and exit"),
+        typer.Option(
+            "--version",
+            callback=_version_callback,
+            is_eager=True,
+            help="Show version and exit",
+        ),
     ] = False,
 ) -> None:
     """DevPilot — WSL2 developer workstation bootstrapper."""
