@@ -7,26 +7,19 @@ venv/
 .vscode/
 .idea/
 .env
-
-# AI-generated files
-.commandcode/
-
 # VHS artifacts
 *.gif
 *.mp4
 *.log
 test.tape
-
 # Build
 dist/
 build/
 *.egg-info/
-
 # Coverage
 .coverage
 coverage.xml
 htmlcov/
-
 # Type checking / linting cache
 .mypy_cache/
 .ruff_cache/
