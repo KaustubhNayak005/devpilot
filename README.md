@@ -1,6 +1,6 @@
 # DevPilot
 
-[![CI](https://github.com/user/devpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/user/devpilot/actions/workflows/ci.yml)
+[![CI](https://github.com/KaustubhNayak005/devpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/KaustubhNayak005/devpilot/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230)](https://docs.astral.sh/ruff/)
@@ -222,7 +222,7 @@ devpilot doctor
 ## Development
 
 ```bash
-git clone https://github.com/user/devpilot.git
+git clone https://github.com/KaustubhNayak005/devpilot.git
 cd devpilot
 pip install -e ".[dev]"
 
