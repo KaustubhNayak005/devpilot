@@ -31,24 +31,34 @@ def run_all_doctors(
         A tuple of (all_results, health_score). health_score is an integer
         from 0 to 100 representing the percentage of passing checks.
     """
+    all_results, module_results = _collect_results(modules)
+
+    if fix and any(not r.passed for r in all_results):
+        _run_fixes(modules, module_results)
+        # Re-run doctors so the reported results and score reflect post-fix state.
+        all_results, module_results = _collect_results(modules)
+
+    total = len(all_results)
+    passed = sum(1 for r in all_results if r.passed)
+    health_score = round((passed / total) * 100) if total > 0 else 100
+
+    if ai_diagnose:
+        _run_ai_diagnosis(modules, module_results)
+
+    return all_results, health_score
+
+
+def _collect_results(
+    modules: list[BaseModule],
+) -> tuple[list[CheckResult], dict[str, list[CheckResult]]]:
+    """Run doctor() on every module and collect the results."""
     all_results: list[CheckResult] = []
     module_results: dict[str, list[CheckResult]] = {}
     for module in modules:
         results = module.doctor()
         all_results.extend(results)
         module_results[module.name] = results
-
-    total = len(all_results)
-    passed = sum(1 for r in all_results if r.passed)
-    health_score = round((passed / total) * 100) if total > 0 else 100
-
-    if fix:
-        _run_fixes(modules, module_results)
-
-    if ai_diagnose:
-        _run_ai_diagnosis(modules, module_results)
-
-    return all_results, health_score
+    return all_results, module_results
 
 
 def _run_fixes(

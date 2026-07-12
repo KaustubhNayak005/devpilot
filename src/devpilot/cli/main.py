@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 from pathlib import Path
 from typing import Annotated
 
@@ -15,14 +17,19 @@ from devpilot.config.manager import ConfigManager
 from devpilot.doctor.runner import run_all_doctors
 from devpilot.logging.logger import setup_logger
 from devpilot.modules.cpp.module import CppModule
+from devpilot.modules.docker.module import DockerModule
 from devpilot.modules.git.module import GitModule
 from devpilot.modules.node.module import NodeModule
 from devpilot.modules.nvim.module import NvimModule
 from devpilot.modules.python.module import PythonModule
+from devpilot.modules.rust.module import RustModule
 from devpilot.modules.vscode.module import VSCodeModule
 from devpilot.utils.shell import run_command
 
-VERSION = "0.2.0"
+try:
+    VERSION = _package_version("devpilot")
+except PackageNotFoundError:  # running from a source tree without installation
+    VERSION = "0.0.0.dev0"
 
 
 def _version_callback(value: bool) -> None:
@@ -48,13 +55,14 @@ def main(
 ) -> None:
     """DevPilot — WSL2 developer workstation bootstrapper."""
 console = Console()
-config = ConfigManager()
 
 ALL_MODULES = {
     "git": GitModule,
     "python": PythonModule,
     "node": NodeModule,
     "cpp": CppModule,
+    "rust": RustModule,
+    "docker": DockerModule,
     "vscode": VSCodeModule,
     "nvim": NvimModule,
 }
@@ -151,8 +159,25 @@ def doctor(
         bool,
         typer.Option("--fix", help="Auto-fix failing modules using known fixes"),
     ] = False,
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Output results as JSON (checks only, no AI or fixes)"),
+    ] = False,
+    fail_under: Annotated[
+        int | None,
+        typer.Option(
+            "--fail-under",
+            min=0,
+            max=100,
+            help="Exit with code 1 if the health score is below this value (for CI)",
+        ),
+    ] = None,
 ) -> None:
     """Run health checks across all modules and compute a health score."""
+    if json_output and (ai or fix):
+        console.print("[red]--json cannot be combined with --ai or --fix.[/red]")
+        raise typer.Exit(code=2)
+
     if ai:
         from devpilot.ai.client import _check_availability
 
@@ -161,35 +186,110 @@ def doctor(
     modules = [cls() for cls in ALL_MODULES.values()]  # type: ignore[abstract]
     results, health_score = run_all_doctors(modules, ai_diagnose=ai, fix=fix)
 
-    console.print(Panel.fit("[bold]DevPilot Doctor[/bold]", border_style="blue"))
+    if json_output:
+        import json as json_lib
+
+        payload = {
+            "score": health_score,
+            "checks": [
+                {"name": r.name, "passed": r.passed, "message": r.message, "fix": r.fix}
+                for r in results
+            ],
+        }
+        print(json_lib.dumps(payload, indent=2))
+    else:
+        console.print(Panel.fit("[bold]DevPilot Doctor[/bold]", border_style="blue"))
+        console.print()
+
+        table = Table(title="Health Checks", show_header=True)
+        table.add_column("Status", width=4)
+        table.add_column("Check")
+        table.add_column("Message", style="dim")
+        table.add_column("Fix", style="yellow")
+
+        for r in results:
+            icon = "✅" if r.passed else "❌"
+            table.add_row(icon, r.name, r.message, r.fix or "")
+
+        console.print(table)
+        console.print()
+
+        if health_score >= 90:
+            color = "green"
+        elif health_score >= 60:
+            color = "yellow"
+        else:
+            color = "red"
+
+        console.print(
+            Panel.fit(
+                f"[bold {color}]Health Score: {health_score}/100[/bold {color}]",
+                border_style=color,
+            )
+        )
+
+    if fail_under is not None and health_score < fail_under:
+        raise typer.Exit(code=1)
+
+
+# Key binary used for the quick PATH check in `devpilot status`.
+MODULE_KEY_BINARY: dict[str, str] = {
+    "git": "git",
+    "python": "python3",
+    "node": "node",
+    "cpp": "g++",
+    "vscode": "code",
+    "nvim": "nvim",
+    "rust": "cargo",
+    "docker": "docker",
+}
+
+
+@app.command()
+def status() -> None:
+    """Show DevPilot status — modules, snapshots, and AI configuration at a glance."""
+    import os
+
+    from devpilot.config.manager import DEFAULT_CONFIG_PATH
+    from devpilot.snapshot.storage import SNAPSHOT_DIR, list_snapshots
+    from devpilot.utils.shell import which
+
+    config_mgr = ConfigManager()
+    recorded = set(config_mgr.get_installed_modules())
+
+    console.print(Panel.fit(f"[bold]DevPilot {VERSION}[/bold]", border_style="blue"))
     console.print()
 
-    table = Table(title="Health Checks", show_header=True)
-    table.add_column("Status", width=4)
-    table.add_column("Check")
-    table.add_column("Message", style="dim")
-    table.add_column("Fix", style="yellow")
-
-    for r in results:
-        icon = "✅" if r.passed else "❌"
-        table.add_row(icon, r.name, r.message, r.fix or "")
-
+    table = Table(title="Modules", show_header=True)
+    table.add_column("Module", style="cyan")
+    table.add_column("Set up via DevPilot")
+    table.add_column("Found on PATH")
+    for name in ALL_MODULES:
+        recorded_label = "[green]yes[/green]" if name in recorded else "[dim]no[/dim]"
+        binary = MODULE_KEY_BINARY.get(name)
+        if binary is None:
+            found_label = "[dim]n/a[/dim]"
+        elif which(binary):
+            found_label = f"[green]{binary} ✓[/green]"
+        else:
+            found_label = f"[red]{binary} missing[/red]"
+        table.add_row(name, recorded_label, found_label)
     console.print(table)
     console.print()
 
-    if health_score >= 90:
-        color = "green"
-    elif health_score >= 60:
-        color = "yellow"
-    else:
-        color = "red"
+    snapshots = list_snapshots()
+    console.print(f"[bold]Snapshots:[/bold] {len(snapshots)} saved in {SNAPSHOT_DIR}")
+    console.print(f"[bold]Config:[/bold] {DEFAULT_CONFIG_PATH}")
 
-    console.print(
-        Panel.fit(
-            f"[bold {color}]Health Score: {health_score}/100[/bold {color}]",
-            border_style=color,
-        )
-    )
+    provider = os.environ.get("DEVPILOT_AI_PROVIDER", "").lower() or "auto-detect"
+    key_status = {
+        "openai": bool(os.environ.get("OPENAI_API_KEY")),
+        "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "gemini": bool(os.environ.get("GEMINI_API_KEY")),
+    }
+    configured = [name for name, ok in key_status.items() if ok]
+    configured_label = ", ".join(configured) if configured else "none (see .env.example)"
+    console.print(f"[bold]AI provider:[/bold] {provider} — API keys set: {configured_label}")
 
 
 @app.command()
@@ -378,6 +478,30 @@ def snapshot_list() -> None:
     console.print("[bold]Saved snapshots:[/bold]\n")
     for s in snapshots:
         console.print(f"  [cyan]{s.name}[/cyan] — {s.timestamp} (v{s.devpilot_version})")
+
+
+@snapshot_app.command("delete")
+def snapshot_delete(
+    name: Annotated[str, typer.Argument(help="Snapshot name to delete")],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Delete without asking for confirmation"),
+    ] = False,
+) -> None:
+    """Delete all saved snapshot files with the given name."""
+    from rich.prompt import Confirm
+
+    from devpilot.snapshot.storage import delete_snapshot
+
+    if not yes and not Confirm.ask(f"Delete all snapshots named '{name}'?", default=False):
+        console.print("[yellow]Aborted.[/yellow]")
+        return
+
+    count = delete_snapshot(name)
+    if count == 0:
+        console.print(f"[red]No snapshots found with name '{name}'.[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"[green]✓ Deleted {count} snapshot file(s) named '{name}'.[/green]")
 
 
 @snapshot_app.command("restore")

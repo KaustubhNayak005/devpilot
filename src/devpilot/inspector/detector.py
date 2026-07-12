@@ -22,91 +22,42 @@ class StackRequirement:
     confidence: str
 
 
-# Ordered list of (file_glob, primary, StackRequirement)
-# "primary" means a match gives "definite" confidence; otherwise "likely".
-DETECTION_RULES: list[tuple[str, bool, StackRequirement]] = [
-    (
-        "pubspec.yaml",
-        True,
-        StackRequirement(
-            name="Flutter",
-            tools=["flutter", "dart", "android-sdk", "java-17"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "CMakeLists.txt",
-        True,
-        StackRequirement(
-            name="C++ / CMake",
-            tools=["cmake", "ninja-build", "clangd", "gcc"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "*.cmake",
-        False,
-        StackRequirement(
-            name="C++ / CMake",
-            tools=["cmake", "ninja-build", "clangd", "gcc"],
-            confidence="likely",
-        ),
-    ),
-    (
-        "Cargo.toml",
-        True,
-        StackRequirement(
-            name="Rust",
-            tools=["rustup", "cargo"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "go.mod",
-        True,
-        StackRequirement(
-            name="Go",
-            tools=["golang"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "package.json",
-        True,
-        StackRequirement(
-            name="Node.js",
-            tools=["nodejs", "npm"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "requirements.txt",
-        True,
-        StackRequirement(
-            name="Python",
-            tools=["python3", "pip"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "pyproject.toml",
-        True,
-        StackRequirement(
-            name="Python",
-            tools=["python3", "pip"],
-            confidence="definite",
-        ),
-    ),
-    (
-        "Dockerfile",
-        True,
-        StackRequirement(
-            name="Docker",
-            tools=["docker", "docker-compose"],
-            confidence="definite",
-        ),
-    ),
-]
+@dataclass(frozen=True)
+class DetectionRule:
+    """An immutable detection rule.
+
+    Attributes:
+        pattern: Exact filename ("Cargo.toml") or extension glob ("*.cmake").
+        primary: True if a match gives "definite" confidence, else "likely".
+        stack: Stack name this rule detects.
+        tools: Tools required by the stack.
+    """
+
+    pattern: str
+    primary: bool
+    stack: str
+    tools: tuple[str, ...]
+
+
+DETECTION_RULES: tuple[DetectionRule, ...] = (
+    DetectionRule("pubspec.yaml", True, "Flutter", ("flutter", "dart", "android-sdk", "java-17")),
+    DetectionRule("CMakeLists.txt", True, "C++ / CMake", ("cmake", "ninja-build", "clangd", "gcc")),
+    DetectionRule("*.cmake", False, "C++ / CMake", ("cmake", "ninja-build", "clangd", "gcc")),
+    DetectionRule("Cargo.toml", True, "Rust", ("rustup", "cargo")),
+    DetectionRule("go.mod", True, "Go", ("golang",)),
+    DetectionRule("package.json", True, "Node.js", ("nodejs", "npm")),
+    DetectionRule("requirements.txt", True, "Python", ("python3", "pip")),
+    DetectionRule("pyproject.toml", True, "Python", ("python3", "pip")),
+    DetectionRule("Dockerfile", True, "Docker", ("docker", "docker-compose")),
+)
+
+
+def _rule_matches(rule: DetectionRule, seen_files: set[str]) -> bool:
+    """Check whether a rule's pattern matches any collected filename."""
+    if rule.pattern.startswith("*."):
+        ext = rule.pattern[1:]
+        return any(fname.endswith(ext) for fname in seen_files)
+    return rule.pattern in seen_files
 
 
 def _has_github_actions(path: str) -> bool:
@@ -128,11 +79,26 @@ def _has_github_actions(path: str) -> bool:
     return False
 
 
+def _collect_filenames(root: Path, max_depth: int = 3) -> set[str]:
+    """Collect file names in the tree up to max_depth, skipping hidden dirs."""
+    seen_files: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root):
+        rel = Path(dirpath).relative_to(root)
+        depth = len(rel.parts) if str(rel) != "." else 0
+        if depth > max_depth:
+            dirnames.clear()
+            continue
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        seen_files.update(filenames)
+    return seen_files
+
+
 def detect_stack(path: str) -> list[StackRequirement]:
     """Scan a directory and detect development stacks.
 
     Walks the directory tree up to depth 3, skipping hidden directories,
-    and checks for known project files.
+    and checks for known project files. Returns fresh StackRequirement
+    instances on every call — results are never shared or mutated globally.
 
     Args:
         path: Root directory path to scan.
@@ -142,46 +108,29 @@ def detect_stack(path: str) -> list[StackRequirement]:
         ("definite" first, then "likely").
     """
     root = Path(path).resolve()
-    seen_files: set[str] = set()
+    seen_files = _collect_filenames(root)
 
-    for dirpath, dirnames, _filenames in os.walk(root):
-        # Calculate depth relative to root
-        rel = Path(dirpath).relative_to(root)
-        depth = len(rel.parts) if str(rel) != "." else 0
-        if depth > 3:
-            dirnames.clear()
+    # Merge rule matches per stack name; "definite" wins over "likely".
+    detected: dict[str, StackRequirement] = {}
+    for rule in DETECTION_RULES:
+        if not _rule_matches(rule, seen_files):
             continue
-
-        # Skip hidden directories
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-
-        for entry in Path(dirpath).iterdir():
-            if not entry.is_file():
-                continue
-            seen_files.add(entry.name)
-
-    results: list[StackRequirement] = []
-
-    # Check glob-based detection rules
-    for file_glob, is_primary, req in DETECTION_RULES:
-        if file_glob.startswith("*."):
-            ext = file_glob[1:]
-            for fname in seen_files:
-                if fname.endswith(ext):
-                    req.confidence = "definite" if is_primary else "likely"
-                    if not any(r.name == req.name and r.confidence == "definite" for r in results):
-                        results.append(req)
-                    break
+        confidence = "definite" if rule.primary else "likely"
+        existing = detected.get(rule.stack)
+        if existing is None:
+            detected[rule.stack] = StackRequirement(
+                name=rule.stack,
+                tools=list(rule.tools),
+                confidence=confidence,
+            )
         else:
-            if file_glob in seen_files:
-                req.confidence = "definite" if is_primary else "likely"
-                # Dedup by name — prefer "definite" over "likely"
-                existing = next((r for r in results if r.name == req.name), None)
-                if existing:
-                    if req.confidence == "definite":
-                        existing.confidence = "definite"
-                else:
-                    results.append(req)
+            if confidence == "definite":
+                existing.confidence = "definite"
+            for tool in rule.tools:
+                if tool not in existing.tools:
+                    existing.tools.append(tool)
+
+    results = list(detected.values())
 
     # Check GitHub Actions separately (it's a directory pattern)
     # Only check the root directly to avoid deep walks

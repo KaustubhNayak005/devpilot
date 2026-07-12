@@ -7,6 +7,45 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-07-12
+
+### Added
+- `devpilot status` — at-a-glance view of modules (set up vs. found on PATH),
+  snapshots, config location, and AI provider configuration
+- `devpilot doctor --json` — machine-readable output for scripting
+- `devpilot doctor --fail-under N` — exit code 1 when the health score is below
+  N, for use in CI pipelines
+- `devpilot snapshot delete <name>` — remove saved snapshots (with confirmation)
+- Snapshot format v2: small UTF-8 config files are stored with full contents,
+  so `snapshot restore` can actually rewrite them (current file is backed up to
+  `<name>.devpilot.bak` first). Pre-v0.3 hash-only snapshots still load.
+- New `rust` module — installs the Rust toolchain via rustup, non-interactive
+- New `docker` module — installs the Docker engine, adds the user to the docker
+  group, starts the service, and health-checks daemon reachability
+- Retry with exponential backoff for **all** AI providers (previously OpenAI only)
+- Ollama diagnosis now uses the API's JSON mode for reliable structured output
+- 64 new tests (109 → 173); coverage gate raised from 45% to 55%
+
+### Changed
+- AI provider layer refactored to a template-method base class: providers now
+  implement only `_complete`, `_stream`, and `is_available`; prompt building,
+  JSON parsing (tolerant of markdown fences and surrounding prose), streaming
+  Markdown rendering, and retry live in one place (~220 lines of duplication removed)
+- `--version` is single-sourced from package metadata instead of a hardcoded string
+- Profile pip installs use `python3 -m pip install --user`, with an automatic
+  `--break-system-packages` retry on PEP 668 "externally managed" systems
+  (Ubuntu 23.04+)
+- `snapshot restore` package-install timeout raised from 5 to 30 minutes
+
+### Fixed
+- `doctor --fix` never fixed the `cpp` and `nvim` modules — the FIXES registry
+  used stale keys (`ccpp`, `neovim`) that match no registered module
+- Stack detector mutated shared module-level rule objects, leaking confidence
+  state between scans (a "likely" scan could downgrade a later "definite" one)
+- Health score is now recomputed after `doctor --fix`, so a successful fix is
+  reflected in the reported score instead of the pre-fix value
+- CI type-check job pointed at a nonexistent `devpilot/` directory (src layout)
+
 ## [0.2.0] — 2026-06-09
 
 ### Added

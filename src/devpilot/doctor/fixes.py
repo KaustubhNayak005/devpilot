@@ -26,7 +26,7 @@ def fix_node(logger: logging.Logger) -> bool:
     return result.returncode == 0
 
 
-def fix_ccpp(logger: logging.Logger) -> bool:
+def fix_cpp(logger: logging.Logger) -> bool:
     """Re-install gcc and build tools if missing."""
     result = run_command(
         [
@@ -44,6 +44,15 @@ def fix_ccpp(logger: logging.Logger) -> bool:
     return result.returncode == 0
 
 
+def fix_docker(logger: logging.Logger) -> bool:
+    """Re-install docker.io and start the service if missing."""
+    result = run_command(["sudo", "apt-get", "install", "-y", "docker.io"])
+    if result.returncode != 0:
+        return False
+    run_command(["sudo", "service", "docker", "start"])
+    return True
+
+
 def fix_vscode(logger: logging.Logger) -> bool:
     """Cannot auto-fix VSCode — print instructions."""
     logger.info("VSCode must be installed on the Windows host, not inside WSL.")
@@ -51,17 +60,20 @@ def fix_vscode(logger: logging.Logger) -> bool:
     return False
 
 
-def fix_neovim(logger: logging.Logger) -> bool:
+def fix_nvim(logger: logging.Logger) -> bool:
     """Re-install neovim if missing."""
     result = run_command(["sudo", "apt-get", "install", "-y", "neovim"])
     return result.returncode == 0
 
 
+# Keys MUST match BaseModule.name values registered in the CLI's ALL_MODULES,
+# otherwise `doctor --fix` silently skips the module.
 FIXES: dict[str, Callable[[logging.Logger], bool]] = {
     "git": fix_git,
     "python": fix_python,
     "node": fix_node,
-    "ccpp": fix_ccpp,
+    "cpp": fix_cpp,
+    "docker": fix_docker,
     "vscode": fix_vscode,
-    "neovim": fix_neovim,
+    "nvim": fix_nvim,
 }

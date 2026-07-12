@@ -69,6 +69,7 @@ def _snapshot_to_dict(snapshot: Snapshot) -> dict[str, Any]:
         "environment_variables": snapshot.environment_variables,
         "config_files": snapshot.config_files,
         "devpilot_config": snapshot.devpilot_config,
+        "config_file_contents": snapshot.config_file_contents,
     }
 
 
@@ -91,6 +92,7 @@ def _dict_to_snapshot(data: dict[str, Any]) -> Snapshot:
         environment_variables=data.get("environment_variables", {}),
         config_files=data.get("config_files", {}),
         devpilot_config=data.get("devpilot_config", {}),
+        config_file_contents=data.get("config_file_contents", {}),
     )
 
 
@@ -127,6 +129,23 @@ def load_snapshot(name_or_path: str) -> Snapshot:
 
     data = json.loads(matches[0].read_text(encoding="utf-8"))
     return _dict_to_snapshot(data)
+
+
+def delete_snapshot(name: str) -> int:
+    """Delete all saved snapshot files matching a name.
+
+    Args:
+        name: Snapshot name (same value used with `snapshot save`).
+
+    Returns:
+        Number of snapshot files deleted (0 if none matched).
+    """
+    _ensure_dir()
+    safe_name = _sanitize_name(name)
+    matches = list(SNAPSHOT_DIR.glob(f"{safe_name}_*.json"))
+    for filepath in matches:
+        filepath.unlink()
+    return len(matches)
 
 
 def list_snapshots() -> list[Snapshot]:

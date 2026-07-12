@@ -5,7 +5,7 @@
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Ruff](https://img.shields.io/badge/lint-ruff-261230)](https://docs.astral.sh/ruff/)
 [![Mypy](https://img.shields.io/badge/typecheck-mypy-blue)](https://mypy-lang.org/)
-[![Coverage](https://img.shields.io/badge/coverage-109%20tests-brightgreen)]()
+[![Coverage](https://img.shields.io/badge/coverage-173%20tests-brightgreen)]()
 
 **AI-powered developer workstation bootstrapper for WSL2 Ubuntu.**
 
@@ -36,6 +36,9 @@ devpilot doctor
 
 # See what you're running
 devpilot info
+
+# See what DevPilot has set up
+devpilot status
 ```
 
 ## Configuration (.env)
@@ -63,6 +66,15 @@ devpilot --version
 
 **Output includes:** Ubuntu version, WSL version, kernel, CPU cores, RAM, disk usage.
 
+### `devpilot status`
+
+At-a-glance overview: which modules DevPilot has set up, which key binaries are
+actually on PATH, how many snapshots exist, and whether an AI provider is configured.
+
+```bash
+devpilot status
+```
+
 ### `devpilot doctor`
 
 Run health checks across all installed modules. Supports offline auto-fix and AI-powered diagnosis.
@@ -72,6 +84,8 @@ devpilot doctor                 # health check only
 devpilot doctor --fix           # auto-fix failures with known fixes (offline)
 devpilot doctor --ai            # AI-powered root cause analysis + suggested fixes
 devpilot doctor --fix --ai      # auto-fix first, then AI handles remaining failures
+devpilot doctor --json          # machine-readable output for scripting
+devpilot doctor --fail-under 90 # exit 1 if score < 90 — useful in CI
 ```
 
 **Scoring:**
@@ -104,10 +118,12 @@ devpilot inspect ~/projects/my-app   # scan a specific path
 Install development tools with a Rich progress bar. Uses topological sort based on module dependency declarations.
 
 ```bash
-devpilot setup           # install all 6 modules in dependency-safe order
+devpilot setup           # install all 8 modules in dependency-safe order
 devpilot setup python    # install just python
 devpilot setup nvim      # install just neovim
 devpilot setup node      # install just Node.js
+devpilot setup rust      # install the Rust toolchain via rustup
+devpilot setup docker    # install the Docker engine
 ```
 
 **Modules installed:**
@@ -118,6 +134,8 @@ devpilot setup node      # install just Node.js
 | python    | python3, pip, venv                                                |
 | node      | Node.js LTS (via NodeSource), npm, TypeScript globally            |
 | cpp       | GCC, G++, Clang, CMake, GDB, Make                                 |
+| rust      | rustup, rustc, cargo (official rustup installer, non-interactive) |
+| docker    | Docker engine, docker group membership, service startup           |
 | vscode    | Detects VS Code CLI, validates Remote-WSL extension               |
 | nvim      | Neovim, ripgrep, fd-find; lazy.nvim config with Telescope,        |
 |           | Treesitter, Mason, LSP, nvim-cmp, Gitsigns                        |
@@ -144,7 +162,12 @@ devpilot snapshot save my-setup    # capture current environment
 devpilot snapshot list             # list saved snapshots
 devpilot snapshot diff my-setup    # compare saved vs current
 devpilot snapshot restore my-setup # restore from snapshot
+devpilot snapshot delete my-setup  # delete a snapshot (asks first; -y to skip)
 ```
+
+Snapshots store the full contents of small config files (`.gitconfig`, `.bashrc`,
+`.zshrc`, `.profile`, Neovim `init.lua`), so `restore` can rewrite them in place —
+the current version is backed up to `<file>.devpilot.bak` before being overwritten.
 
 ### `devpilot init`
 
@@ -230,16 +253,16 @@ pip install -e ".[dev]"
 ruff check src/ tests/
 
 # Type check
-mypy devpilot/ --ignore-missing-imports
+mypy src/devpilot/ --ignore-missing-imports
 
-# Test (109 tests)
+# Test (173 tests)
 pytest -v
 
 # Test with coverage
 pytest --cov=devpilot --cov-report=term-missing
 
 # Run all checks (what CI does)
-ruff check . && mypy devpilot/ --ignore-missing-imports && pytest -v
+ruff check . && mypy src/devpilot/ --ignore-missing-imports && pytest -v
 ```
 
 ## Documentation

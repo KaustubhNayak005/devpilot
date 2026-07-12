@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,6 +20,9 @@ CONFIG_FILES_TO_HASH: list[str] = [
     "~/.profile",
     "~/.config/nvim/init.lua",
 ]
+
+# Config files larger than this are hashed but their contents are not stored.
+MAX_CONFIG_CONTENT_BYTES: int = 256 * 1024
 
 ENV_VARS_TO_CAPTURE: list[str] = [
     "PATH",
@@ -47,6 +50,8 @@ class Snapshot:
         environment_variables: A subset of relevant environment variables.
         config_files: Mapping of config file path -> SHA-256 hash.
         devpilot_config: Contents of the DevPilot config file.
+        config_file_contents: Mapping of config file path -> full text content
+            (only for small UTF-8 files; enables real restoration).
     """
 
     name: str
@@ -58,6 +63,7 @@ class Snapshot:
     environment_variables: dict[str, str]
     config_files: dict[str, str]
     devpilot_config: dict[str, Any]
+    config_file_contents: dict[str, str] = field(default_factory=dict)
 
 
 def _capture_system() -> dict[str, str]:
@@ -182,6 +188,31 @@ def _capture_config_file_hashes() -> dict[str, str]:
     return hashes
 
 
+def _capture_config_file_contents() -> dict[str, str]:
+    """Store the text contents of small config files so restore can rewrite them.
+
+    Files larger than MAX_CONFIG_CONTENT_BYTES or not valid UTF-8 are skipped —
+    those remain hash-only, as in snapshot format v1.
+
+    Returns:
+        Dictionary mapping file path to full text content.
+    """
+    contents: dict[str, str] = {}
+    for file_path in CONFIG_FILES_TO_HASH:
+        expanded = Path(file_path).expanduser()
+        try:
+            raw = expanded.read_bytes()
+        except OSError:
+            continue
+        if len(raw) > MAX_CONFIG_CONTENT_BYTES:
+            continue
+        try:
+            contents[file_path] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    return contents
+
+
 def _capture_devpilot_config() -> dict[str, Any]:
     """Read the current DevPilot configuration.
 
@@ -231,4 +262,5 @@ def capture_snapshot(name: str) -> Snapshot:
         environment_variables=_capture_env_vars(),
         config_files=_capture_config_file_hashes(),
         devpilot_config=_capture_devpilot_config(),
+        config_file_contents=_capture_config_file_contents(),
     )

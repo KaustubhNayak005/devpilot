@@ -55,9 +55,16 @@ class TestFixFunctions:
         result = fix_vscode(logger)
         assert result is False
 
-    def test_fixes_registry_has_all_expected_modules(self):
-        """FIXES dict has entries for all 6 modules."""
-        assert set(FIXES.keys()) == {"git", "python", "node", "ccpp", "vscode", "neovim"}
+    def test_fixes_registry_keys_match_registered_module_names(self):
+        """Every FIXES key is a real module name — otherwise doctor --fix skips it."""
+        from devpilot.cli.main import ALL_MODULES
+
+        assert set(FIXES.keys()) <= set(ALL_MODULES.keys()), (
+            "FIXES contains keys that do not match any registered module name; "
+            "doctor --fix would silently skip those modules"
+        )
+        # The six original modules must all have offline fixes.
+        assert {"git", "python", "node", "cpp", "vscode", "nvim"} <= set(FIXES.keys())
 
     def test_fixes_registry_entries_are_callable(self):
         """Every entry in FIXES is a callable function."""

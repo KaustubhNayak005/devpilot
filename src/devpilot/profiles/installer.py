@@ -12,6 +12,42 @@ from devpilot.profiles import Profile
 console = Console()
 
 
+def _pip_install(packages: list[str]) -> tuple[bool, str]:
+    """Install packages user-scoped via `python3 -m pip`.
+
+    Uses `python3 -m pip` rather than a bare `pip` so it works when pip has
+    no shim on PATH. On PEP 668 "externally managed" systems (Ubuntu 23.04+)
+    the first attempt fails, so retry with --break-system-packages, which
+    is safe for --user installs (nothing system-owned is touched).
+
+    Returns:
+        Tuple of (succeeded, error output).
+    """
+    base = ["python3", "-m", "pip", "install", "--user"]
+    result = subprocess.run(
+        base + packages,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    if result.returncode == 0:
+        return True, ""
+
+    stderr = result.stderr or ""
+    if "externally-managed-environment" in stderr:
+        result = subprocess.run(
+            base + ["--break-system-packages"] + packages,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode == 0:
+            return True, ""
+        stderr = result.stderr or ""
+
+    return False, stderr.strip()
+
+
 def install_profile(profile: Profile, dry_run: bool = False) -> bool:
     """Install all tools for a developer profile.
 
@@ -66,16 +102,11 @@ def install_profile(profile: Profile, dry_run: bool = False) -> bool:
     if profile.pip_packages:
         console.print("[bold]Installing pip packages...[/bold]")
         try:
-            result = subprocess.run(
-                ["pip", "install"] + profile.pip_packages,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            if result.returncode == 0:
+            ok, error = _pip_install(profile.pip_packages)
+            if ok:
                 console.print("[green]pip packages installed.[/green]")
             else:
-                console.print(f"[red]pip install failed: {result.stderr.strip()}[/red]")
+                console.print(f"[red]pip install failed: {error}[/red]")
                 success = False
         except (subprocess.TimeoutExpired, OSError, FileNotFoundError) as exc:
             console.print(f"[red]pip install error: {exc}[/red]")

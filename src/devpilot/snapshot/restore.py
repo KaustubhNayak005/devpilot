@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 from rich.console import Console
@@ -20,6 +21,41 @@ def _current_packages() -> list[str]:
         List of package names.
     """
     return _capture_apt_packages()
+
+
+def _restore_config_file(snapshot: Snapshot, file_path: str) -> None:
+    """Offer to restore a single config file from the snapshot's stored content.
+
+    The current file (if any) is backed up to <name>.devpilot.bak before
+    being overwritten. Snapshots created before content capture existed
+    only store hashes — those fall back to a manual-restoration notice.
+
+    Args:
+        snapshot: The snapshot being restored.
+        file_path: The config file path (with ~) to restore.
+    """
+    saved_content = snapshot.config_file_contents.get(file_path)
+    full_path = Path(file_path).expanduser()
+    state = "changed" if full_path.exists() else "missing"
+
+    if saved_content is None:
+        console.print(
+            f"[yellow]{file_path} is {state}, but this snapshot only stores its hash "
+            "(pre-v0.3 snapshot). Manual restoration required.[/yellow]"
+        )
+        return
+
+    if not Confirm.ask(f"{file_path} is {state}. Restore it from the snapshot?"):
+        return
+
+    if full_path.exists():
+        backup = full_path.with_name(full_path.name + ".devpilot.bak")
+        shutil.copy2(full_path, backup)
+        console.print(f"  [dim]Current file backed up to {backup}[/dim]")
+
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_text(saved_content, encoding="utf-8")
+    console.print(f"  [green]✓ Restored {file_path}[/green]")
 
 
 def restore_snapshot(snapshot: Snapshot) -> None:
@@ -47,7 +83,7 @@ def restore_snapshot(snapshot: Snapshot) -> None:
                     ["sudo", "apt-get", "install", "-y", *missing_pkgs],
                     capture=True,
                     check=False,
-                    timeout=300,
+                    timeout=1800,
                 )
                 if result.returncode == 0:
                     console.print(f"[green]✓ Installed {len(missing_pkgs)} package(s)[/green]")
@@ -62,7 +98,7 @@ def restore_snapshot(snapshot: Snapshot) -> None:
     from devpilot.snapshot.capture import _capture_config_file_hashes
 
     current_hashes = _capture_config_file_hashes()
-    changed_files: list[str] = []
+    files_to_restore: list[str] = []
 
     for file_path in CONFIG_FILES_TO_HASH:
         saved_hash = snapshot.config_files.get(file_path)
@@ -76,28 +112,15 @@ def restore_snapshot(snapshot: Snapshot) -> None:
                 )
             continue
 
-        if current_hash is None:
-            console.print(
-                f"[yellow]Config file was in snapshot but missing now: {file_path}[/yellow]"
-            )
-            continue
-
         if saved_hash != current_hash:
-            changed_files.append(file_path)
+            files_to_restore.append(file_path)
 
-    if changed_files:
-        console.print("\n[yellow]Config files that have changed:[/yellow]")
-        for f in changed_files:
+    if files_to_restore:
+        console.print("\n[yellow]Config files that differ from the snapshot:[/yellow]")
+        for f in files_to_restore:
             console.print(f"  [yellow]{f}[/yellow]")
-
-        for f in changed_files:
-            full_path = Path(f).expanduser()
-            if full_path.exists():
-                if Confirm.ask(f"{f} has changed. Restore from snapshot?"):
-                    console.print(
-                        "[yellow]Manual restoration required. "
-                        "Snapshot only stores hashes, not content.[/yellow]"
-                    )
+        for f in files_to_restore:
+            _restore_config_file(snapshot, f)
     else:
         console.print("[green]✓ Config files match the snapshot[/green]")
 
